@@ -11,7 +11,7 @@ namespace global {
     class SmartPointer{
 
     public:
-        SmartPointer(int *ptr);
+        explicit SmartPointer(int *ptr);
 
         ~SmartPointer();
 
