@@ -14,6 +14,8 @@ int main(){
     smart_pointer2 = std::move(smart_pointer2);
 
     std::cout << smart_pointer2.getRefCount() << std::endl;
+
+
     return 0;
 }
 

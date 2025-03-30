@@ -11,22 +11,90 @@
 
 namespace global {
 
-    template <typename T>
-    class SmartPointer{
+    class RefCountPolicy {
+        public:
+            RefCountPolicy() : ref_count_(new int(1)) {
 
+            }
+
+            RefCountPolicy(RefCountPolicy &&other) noexcept: ref_count_(other.ref_count_) {
+                other.ref_count_=nullptr;
+            }
+
+            RefCountPolicy(RefCountPolicy const &other): ref_count_(other.ref_count_) {
+                addRef();
+            }
+
+            bool operator==(const RefCountPolicy & other) const {
+                return ref_count_ == other.ref_count_;
+            }
+
+            bool operator!=(RefCountPolicy const &other) const {
+                return !(*this == other);
+            }
+
+            // deleted as it requires more control
+            // if we would to do something like this
+            // RefCountPolicy &operator=(RefCountPolicy &&other)  noexcept {
+            //     int* old_ref_count = ref_count_;
+            //     ref_count_ = other.ref_count_;
+            //     if((*old_ref_count)--) {
+            //         // how do I destroy now the derived object???
+            //     }
+            //     return *this;
+            // }
+
+            RefCountPolicy &operator=(RefCountPolicy &&other)  noexcept = delete;
+            RefCountPolicy &operator=(RefCountPolicy const &other)  = delete;
+
+
+
+            friend void swap(RefCountPolicy& lhs, RefCountPolicy& rhs) noexcept {
+                std::cout << "swap(RefCountPolicy)\n";
+                std::swap(lhs.ref_count_, rhs.ref_count_);
+            }
+            void addRef() {
+                ++(*ref_count_);
+            }
+
+            void removeRef() {
+                --(*ref_count_);
+            }
+
+            [[nodiscard]] auto getRefCount() const -> int {
+                return *ref_count_;
+            }
+
+            // virtual destructor needed
+            virtual ~RefCountPolicy() {
+                removeRef();
+                if(*ref_count_ == 0) {
+                    delete ref_count_;
+                }
+
+            }
+
+        private:
+            int *ref_count_{nullptr};
+    };
+
+    template <typename T,
+              typename OwnershipPolicy = RefCountPolicy>
+    class SmartPointer : public OwnershipPolicy {
+        using OP = OwnershipPolicy;
     public:
-        explicit SmartPointer(T *ptr): pointee_(ptr), ref_count_(new int(1)) {}
+        explicit SmartPointer(T *ptr): OP(), pointee_(ptr) {}
 
-        SmartPointer(SmartPointer &&other) noexcept: pointee_(other.pointee_), ref_count_(other.ref_count_) {
-            other.pointee_ = nullptr;
-            other.ref_count_ = nullptr;
-            std::cout << "move ctor, ref count = " << *ref_count_  << std::endl;
+        SmartPointer(SmartPointer &&other) noexcept:  OP(), pointee_(nullptr) {
+            std::swap(*this, other);
+
+            std::cout << "move ctor, ref count = " << OP::getRefCount()  << std::endl;
 
         }
 
-        SmartPointer(const SmartPointer &other) noexcept: pointee_(other.pointee_), ref_count_(other.ref_count_) {
-            (*ref_count_)++;
-            std::cout << "copy ctor, ref count = " << *ref_count_  << std::endl;
+        SmartPointer(const SmartPointer &other) noexcept: OP(other), pointee_(other.pointee_) {
+
+            std::cout << "copy ctor, ref count = " << OP::getRefCount()  << std::endl;
 
         }
 
@@ -34,15 +102,19 @@ namespace global {
             if(*this == other) {
                 return *this;
             }
-
-
-            destroy();
-
-            pointee_ = other.pointee_;
-            ref_count_ = other.ref_count_;
-            ++(*ref_count_);
-
-            std::cout << "copy assign, ref count = " << *ref_count_  << std::endl;
+            // properly clean up after us
+            // move yourself in temp object which will clean up
+            {
+                SmartPointer temp{nullptr};
+                std::swap(*this, temp);
+            }
+            // we are now empty
+            assert(OP::getRefCount() == 0);
+            assert(pointee_ == nullptr);
+            {
+                SmartPointer temp{other};
+                std::swap(*this, temp);
+            }
 
             return *this;
         }
@@ -51,27 +123,32 @@ namespace global {
             if(*this == other) {
                 return *this;
             }
-            pointee_ = other.pointee_;
-            ref_count_ = other.ref_count_;
 
-            other.pointee_ = nullptr;
-            other.ref_count_ = nullptr;
-            std::cout << "move assign, ref count = " << *ref_count_  << std::endl;
+            std::swap(*this, other);
+            std::cout << "move assign, ref count = " << OP::getRefCount()  << std::endl;
 
             return *this;
         }
 
-        [[nodiscard]] auto getRefCount() const -> int {
-            return *ref_count_;
+        friend void swap(SmartPointer& lhs, SmartPointer& rhs) noexcept {
+            std::cout << "swap(SmartPointer)\n";
+            std::swap(static_cast<OP&>(lhs), static_cast<OP&>(rhs));
+            std::swap(lhs.pointee_, rhs.pointee_);
         }
+
+
 
         ~SmartPointer() {
             std::cout << "destructor" << std::endl;
-            destroy();
+            OP::removeRef();
+            if(OP::getRefCount() == 0 && pointee_ != nullptr) {
+                destroy();
+            }
+
         }
 
         bool operator==(SmartPointer const &other) {
-            return other.pointee_ == this->pointee_ && other.ref_count_ == this->ref_count_;
+            return static_cast<OP const &>(other) == static_cast<OP const &>(*this) && other.pointee_ == this->pointee_;
         }
 
         bool operator !=(SmartPointer const &other) {
@@ -80,20 +157,14 @@ namespace global {
 
     private:
         void destroy() {
-            if(ref_count_ != nullptr) {
-                --(*ref_count_);
-            }
-            std::cout << "destroy, ref_count after decrement:" <<  (ref_count_ != nullptr ? *ref_count_ : -11) << std::endl;
-            if(ref_count_!= nullptr && *ref_count_ == 0) {
-                std::cout << "delete" << std::endl;
-                assert(pointee_ != nullptr);
-                delete pointee_;
-            }
+            std::cout << "destroy, ref_count after decrement:" <<  OP::getRefCount() << std::endl;
+            assert(pointee_ != nullptr);
+            delete pointee_;
+
         }
         // pointee, we are the owners now
         T *pointee_;
 
-        int* ref_count_;
     };
 
 
