@@ -6,9 +6,5 @@
 
 namespace global {
 
-SmartPointer::SmartPointer(int *ptr) : pointee_(ptr) {}
-
-
-SmartPointer::~SmartPointer() { delete pointee_; }
 
 }// namespace global
