@@ -6,6 +6,7 @@
 #include "smart_pointer.hpp"
 
 int main(){
+    // https://isocpp.org/wiki/faq/templates#template-proxies
     global::SmartPointer smart_pointer{new int(2)};
 
 
