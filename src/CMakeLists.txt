@@ -9,3 +9,10 @@ target_include_directories(pointer PUBLIC ../include/modern_cpp_design/smart_poi
 
 add_executable(typelists typelists.cpp)
 target_include_directories(typelists PUBLIC ../include/modern_cpp_design/typelists)
+
+
+add_executable(allocators malloc_playground.cpp)
+target_include_directories(allocators PUBLIC ../include/modern_cpp_design/allocators)
+
+
+add_subdirectory(allocation)
