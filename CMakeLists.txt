@@ -5,6 +5,17 @@ project(
         VERSION 0.1
         LANGUAGES CXX)
 
+include(FetchContent)
+
+
+FetchContent_Declare(
+        gtest
+        URL https://github.com/google/googletest/archive/03597a01ee50ed33e9dfd640b249b4be3799d395.zip
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(gtest)
+
+
 ## do i need to set TARGET property or global one?
 find_program(CLANG_FOUND clang)
 find_program(CLANGXX_FOUND clang++)
@@ -37,6 +48,15 @@ endif()
 
 ## includes directory which you need
 add_subdirectory(src)
+
+
+option(ENABLE_TESTING "Enable testing" ON)
+
+
+enable_testing()
+add_subdirectory(tests)
+
+
 
 
 
