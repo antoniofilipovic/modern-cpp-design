@@ -1,21 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(
-        ModernCppDesign
-        VERSION 0.1
-        LANGUAGES CXX)
-
-include(FetchContent)
-
-
-FetchContent_Declare(
-        gtest
-        URL https://github.com/google/googletest/archive/03597a01ee50ed33e9dfd640b249b4be3799d395.zip
-)
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(gtest)
-
-
 ## do i need to set TARGET property or global one?
 find_program(CLANG_FOUND clang)
 find_program(CLANGXX_FOUND clang++)
@@ -26,7 +10,17 @@ else()
     message(FATAL_ERROR "Couldn't find clang and/or clang++!")
 endif()
 
+project(
+        ModernCppDesign
+        VERSION 0.1
+        LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set_property(GLOBAL PROPERTY CXX_STANDARD 20)
+
+include(FetchContent)
+
 option(UBSAN "Build with Undefined Behaviour Sanitizer" OFF)
 
 
@@ -52,7 +46,14 @@ add_subdirectory(src)
 
 option(ENABLE_TESTING "Enable testing" ON)
 
+FetchContent_Declare(
+        gtest
+        URL https://github.com/google/googletest/archive/03597a01ee50ed33e9dfd640b249b4be3799d395.zip
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
+
+FetchContent_MakeAvailable(gtest)
 enable_testing()
 add_subdirectory(tests)
 
