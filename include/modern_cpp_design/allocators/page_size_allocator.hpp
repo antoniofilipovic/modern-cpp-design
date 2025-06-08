@@ -38,6 +38,8 @@ class PageSizeAllocator{
     // this is a problem because we don't know where is this pointer stored in our array
 	void deallocate(void *ptr);
 
+    ~PageSizeAllocator();
+
   private:
       std::size_t pagesAllocated_{0};
       std::size_t pagesFreed_{0};
