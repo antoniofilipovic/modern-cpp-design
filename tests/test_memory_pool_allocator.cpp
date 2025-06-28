@@ -64,3 +64,7 @@ TEST(MemoryPoolAllocatorTest, TestMemoryPoolAllocatesOnlyOnePage){
 TEST(MemoryPoolAllocatorTest, TestMemoryPoolReusesAllocations){
 
 }
+
+TEST(MemoryPoolAllocatorTest, TestMemoryIsAllocatable){
+
+}

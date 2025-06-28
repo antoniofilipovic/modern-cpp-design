@@ -18,7 +18,7 @@ constexpr std::size_t NUM_PAGES = 4096/sizeof(void*);
 * which can reuse that memory and report it back when it is freed
 * Currently there are limitations in terms of how to find when the block is freed.
 * That should be solved if we have linked list of pages, and use start and end of the page as a bookkeeping
-* mechansim to free the pages
+* mechanism to free the pages
 */
 
 /**
@@ -32,11 +32,21 @@ class PageSizeAllocator{
 
     explicit PageSizeAllocator() = default;
 
+    static std::size_t actualSizeAllocated(std::size_t);
+
     // for now let's say that size can only be of 4096 bytes,
-    void* allocate(std::size_t size, std::size_t allignment);
+    void* allocate(std::size_t alignment, std::size_t size);
 
     // this is a problem because we don't know where is this pointer stored in our array
 	void deallocate(void *ptr);
+
+    [[nodiscard]] std::size_t getPagesAllocated() const {
+        return pagesAllocated_;
+    }
+
+    [[nodiscard]] std::size_t getPagesFreed() const {
+        return pagesFreed_;
+    }
 
     ~PageSizeAllocator();
 

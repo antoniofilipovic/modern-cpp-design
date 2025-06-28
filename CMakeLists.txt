@@ -46,18 +46,18 @@ add_subdirectory(src)
 
 option(ENABLE_TESTING "Enable testing" ON)
 
-FetchContent_Declare(
-        gtest
-        URL https://github.com/google/googletest/archive/03597a01ee50ed33e9dfd640b249b4be3799d395.zip
-)
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+if(ENABLE_TESTING)
+    FetchContent_Declare(
+            gtest
+            URL https://github.com/google/googletest/archive/03597a01ee50ed33e9dfd640b249b4be3799d395.zip
+    )
+    # Needed per gtest docs
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
-
-FetchContent_MakeAvailable(gtest)
-enable_testing()
-add_subdirectory(tests)
-
-
+    FetchContent_MakeAvailable(gtest)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 
 

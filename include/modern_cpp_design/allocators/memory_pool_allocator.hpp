@@ -1,76 +1,72 @@
-#include <cstdint>
-#include <page_size_allocator.hpp>
-#include<vector>
+#pragma once
+
+#include <vector>
 #include <cassert>
 
+#include "page_size_allocator.hpp"
 
 namespace memory{
 constexpr std::size_t BLOCK_SIZE = 512;
 constexpr std::size_t NUM_BLOCKS_PER_PAGE = PAGE_SIZE / BLOCK_SIZE;
-class MemoryPoolAllocator{
 
+/**
+ * Currently very simplified implementation of memory pool. In case it needs more memory
+ * it calls page_size_allocator which provides page aligned memory
+ * Once memory is in the memory pool it splits the page on blocks of a size of 512.
+ * This would mean that free blocks will be on page_size + 0, page_size+512, ..., page_size+(4096-512)
+ * Hence, the only alignment allowed is up to 512 bytes. If a block of a bigger alignment
+ * is required, it would fail. (I should add a test for that).
+ * Also, since allocator does not track to which page which block belongs to,
+ * in case of all blocks belonging to one page are freed
+ * it won't free the whole page, hence this one is
+ */
+class MemoryPoolAllocator{
 
   public:
       // no locking in case of multi threaded applications
       explicit MemoryPoolAllocator(PageSizeAllocator &page_size_allocator): page_size_allocator_(page_size_allocator){}
 
-      void *allocate(std::size_t alignment, std::size_t size){
-          assert(size <= 512);
+      void *allocate(std::size_t alignment, std::size_t size);
 
-          if (free_pointers_.empty()) {
-              void *ptr = page_size_allocator_.allocate(PAGE_SIZE, PAGE_SIZE);
-              pages_ptrs_.emplace_back(ptr);
-              assert(ptr != nullptr);
-              pages_allocated_+=1;
-              for(std::size_t i{0}; i<PAGE_SIZE/512; i++) {
-                  free_pointers_.emplace_back(reinterpret_cast<void *>(reinterpret_cast<uint64_t>(ptr) + i * 512));
-              }
-          }
-          assert(!free_pointers_.empty());
+      void deallocate(void *ptr);
 
+      void release();
 
-          // swap beginning and end
-          std::iter_swap(free_pointers_.begin(), free_pointers_.end()-1);
-
-          auto *allocated = free_pointers_.back();
-          free_pointers_.pop_back();
-          used_pointers_.emplace_back(allocated);
-          return allocated;
+      [[nodiscard]] std::size_t getNumFreeBlocks() const {
+          return free_pointers_.size();
       }
 
-      void deallocate(void *ptr){
-
-          auto const elem = std::find(used_pointers_.begin(), used_pointers_.end(), [&ptr](void* const curr) {
-              return ptr == curr;
-          });
-          assert(elem != used_pointers_.end());
-          // kick out the element
-          std::iter_swap(elem, used_pointers_.end()-1);
-          used_pointers_.pop_back();
-
-          free_pointers_.emplace_back(ptr);
+      [[nodiscard]] std::size_t getNumUsedBlocks() const {
+          return used_pointers_.size();
       }
 
-      void release() {
-          assert(used_pointers_.empty());
-          for(void *ptr: pages_ptrs_) {
-              page_size_allocator_.deallocate(ptr);
-          }
-          free_pointers_.clear();
+      ~MemoryPoolAllocator() {
+        release();
       }
-
-    ~MemoryPoolAllocator() {
-          release();
-      }
-
-
 
   private:
 
+    /**
+     * List of free pointers of a size of 512
+     */
     std::vector<void*> free_pointers_;
+
+    /**
+     * List of a used pointers.
+     */
     std::vector<void*> used_pointers_;
+
+    /**
+      * List of pointers to the beginning of the page. We can't free
+      * each block, but we can only return whole page
+      */
     std::vector<void*> pages_ptrs_;
+
+      /**
+       * Number of pages allocated in total
+       */
     std::size_t pages_allocated_{0};
+
     PageSizeAllocator &page_size_allocator_;
 
 
