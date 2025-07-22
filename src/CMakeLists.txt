@@ -22,3 +22,10 @@ add_executable(custom_allocator custom_allocator.cpp
         custom_allocator.cpp)
 target_include_directories(custom_allocator PUBLIC ../include/modern_cpp_design/allocators)
 target_link_libraries(custom_allocator allocators)
+
+
+
+
+add_executable(afmalloc_playground afmalloc_playground.cpp)
+target_include_directories(afmalloc_playground PUBLIC ../include/afmalloc)
+target_link_libraries(afmalloc_playground afmalloc)
