@@ -53,6 +53,9 @@ class AFMalloc{
         };
 
 
+      void allocateUsingSbrk();
+
+
 
 
     AFArena m_afarena{};

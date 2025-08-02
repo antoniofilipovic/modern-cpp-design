@@ -30,20 +30,18 @@ void AFMalloc::free(void *p) {
 
     if(m_afarena.m_free_chunks == nullptr) {
         m_afarena.m_free_chunks = free_chunk;
+        m_afarena.m_free_chunks->m_next = free_chunk;
+        m_afarena.m_free_chunks->m_prev = free_chunk;
         return;
     }
-    /// next_free_chunk -> current_free_chunk->next -> nullptr| chunk
-    Chunk *next_free_chunk = m_afarena.m_free_chunks;
-    if(next_free_chunk->m_next == nullptr) {
-        assert(next_free_chunk->m_prev == nullptr);
+    Chunk *last_in_chunk = m_afarena.m_free_chunks;
+    Chunk *first_in_chunk = last_in_chunk->m_prev;
+    free_chunk->m_next = last_in_chunk;
+    free_chunk->m_prev = first_in_chunk;
 
-        // it should be double linked list where end points to the beginning
-        next_free_chunk->m_next = free_chunk;
-        next_free_chunk->m_prev = free_chunk;
-        free_chunk->m_prev = next_free_chunk;
-        free_chunk->m_next = next_free_chunk;
-        return;
-    }
+    last_in_chunk->m_prev= free_chunk;
+    first_in_chunk->m_next = free_chunk;
+
 
     // fill out normal part of code
 }
@@ -60,6 +58,17 @@ AFMalloc::~AFMalloc() {
 
 void do_allocation() {
 
+}
+
+void AFMalloc::allocateUsingSbrk() {
+    void *ptr = sbrk(MAX_HEAP_SIZE);
+    if(ptr == reinterpret_cast<void *>(-1)) {
+        std::cout << "sbrk does not work" << std::endl;
+    }
+    assert(ptr == m_afarena.m_begin);
+    m_afarena.m_allocated_size += 32*4096; // 128 kb, same as what malloc does
+    m_afarena.m_free_size = m_afarena.m_allocated_size;
+    m_afarena.m_top = m_afarena.m_begin;
 }
 
 void *AFMalloc::malloc(std::size_t size) {
@@ -86,14 +95,7 @@ void *AFMalloc::malloc(std::size_t size) {
             m_afarena.m_free_size = MAX_HEAP_SIZE;
 
         }else {
-            void *ptr = sbrk(MAX_HEAP_SIZE);
-            if(ptr == reinterpret_cast<void *>(-1)) {
-                std::cout << "sbrk does not work" << std::endl;
-            }
-            assert(ptr == m_afarena.m_begin);
-            m_afarena.m_allocated_size += 32*4096; // 128 kb, same as what malloc does
-            m_afarena.m_free_size = m_afarena.m_allocated_size;
-            m_afarena.m_top = m_afarena.m_begin;
+            allocateUsingSbrk();
         }
 
     }

@@ -12,3 +12,8 @@ target_link_libraries(test_memory_pool_allocator GTest::gtest_main allocators)
 
 
 #gtest_discover_tests(page_allocator_test)
+
+
+add_executable(test_afmalloc test_afmalloc.cpp)
+target_include_directories(test_afmalloc PUBLIC ../include/afmalloc)
+target_link_libraries(test_afmalloc GTest::gtest_main afmalloc)
