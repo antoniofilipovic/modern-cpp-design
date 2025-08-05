@@ -11,18 +11,9 @@
  mmap(addr, (size), (prot), (flags)|MAP_ANONYMOUS|MAP_PRIVATE, -1, 0)
 
 
-static constexpr std::size_t MAX_HEAP_SIZE = 32*4096;
-AFMalloc::AFMalloc(bool use_sbrk, std::size_t requested_initial_size): m_use_sbrk(use_sbrk) {
-    if(m_use_sbrk) {
-        void *current_break = sbrk(0);
-        m_afarena.m_begin = current_break;
-        std::cout << "Current break" << reinterpret_cast<uint64_t>(m_afarena.m_begin) << std::endl;
-        std::cout << requested_initial_size << std::endl;
-    }else {
-        m_afarena.m_begin = nullptr;
-    }
+constexpr std::size_t MAX_HEAP_SIZE = 32*4096;
+constexpr bool TRACKING{false};
 
-}
 
 void AFMalloc::free(void *p) {
     auto *free_chunk = reinterpret_cast<Chunk *>(reinterpret_cast<uint64_t>(p) - sizeof(Chunk));
@@ -39,70 +30,58 @@ void AFMalloc::free(void *p) {
     free_chunk->m_next = last_in_chunk;
     free_chunk->m_prev = first_in_chunk;
 
-    last_in_chunk->m_prev= free_chunk;
+    last_in_chunk->m_prev = free_chunk;
     first_in_chunk->m_next = free_chunk;
 
+    m_afarena.m_free_chunks = free_chunk;
 
     // fill out normal part of code
 }
 
 AFMalloc::~AFMalloc() {
-    if(m_use_sbrk) {
-        // is this enough to deallocate?
-        sbrk(-static_cast<int64_t>(m_afarena.m_allocated_size));
-    }else {
-        munmap(m_afarena.m_begin, m_afarena.m_allocated_size);
-    }
-
+    munmap(m_afarena.m_begin, m_afarena.m_allocated_size);
 }
 
 void do_allocation() {
 
 }
 
-void AFMalloc::allocateUsingSbrk() {
-    void *ptr = sbrk(MAX_HEAP_SIZE);
-    if(ptr == reinterpret_cast<void *>(-1)) {
-        std::cout << "sbrk does not work" << std::endl;
-    }
-    assert(ptr == m_afarena.m_begin);
-    m_afarena.m_allocated_size += 32*4096; // 128 kb, same as what malloc does
-    m_afarena.m_free_size = m_afarena.m_allocated_size;
-    m_afarena.m_top = m_afarena.m_begin;
+std::size_t get_alignment_size(void* ptr, std::size_t alignment) {
+    const auto int_ptr = reinterpret_cast<uintptr_t>(ptr);
+    const auto aligned_ptr_int = (int_ptr - 1u + alignment) & -alignment;
+    return  aligned_ptr_int - int_ptr;
 }
 
 void *AFMalloc::malloc(std::size_t size) {
 
-    //assert((sbrk(0) == m_afarena.m_begin) && "sbrk(0) gives different address than on the beginning");
-    // initialization of arena
-    if(m_afarena.m_allocated_size == 0) {
-        if(!m_use_sbrk) {
-            // allocate block of memory, I am not sure if this block is aligned on anything other than page size
-            void *p1 = MMAP (nullptr, MAX_HEAP_SIZE, PROT_READ | PROT_WRITE, MAP_POPULATE);
-            if(p1 == nullptr) {
-                return nullptr;
-            }
-            //
-            // if (mprotect (p1, size, PROT_READ | PROT_WRITE) != 0)
-            // {
-            //     munmap (p1, MAX_HEAP_SIZE);
-            //     return nullptr;
-            // }
-            std::cout << "Value is rounded up on page size: " << reinterpret_cast<uint64_t>(p1) << "" << reinterpret_cast<uint64_t>(p1)/4096 << std::endl;
-            m_afarena.m_allocated_size = MAX_HEAP_SIZE;
-            m_afarena.m_begin = p1;
-            m_afarena.m_top= p1;
-            m_afarena.m_free_size = MAX_HEAP_SIZE;
-
-        }else {
-            allocateUsingSbrk();
+    // if there is no enough free memory
+    const std::size_t alignment_size = m_afarena.m_top != nullptr ? get_alignment_size(m_afarena.m_top, alignof(Chunk)):0;
+    if(m_afarena.m_free_size < sizeof(Chunk) + size + alignment_size) {
+        if(size + sizeof(Chunk)  + alignment_size > MAX_HEAP_SIZE) {
+            assert(false); // unsupported case
         }
+        if(m_afarena.m_top != nullptr) {
+            assert(false); // unsupported case with missing new heap
+        }
+        // allocate block of memory, I am not sure if this block is aligned on anything other than page size
+        void *p1 = MMAP (nullptr, MAX_HEAP_SIZE, PROT_READ | PROT_WRITE, MAP_POPULATE);
+        if(p1 == nullptr) {
+            return nullptr;
+        }
+        std::cout << "Value is rounded up on page size: " << reinterpret_cast<uint64_t>(p1) << "" << reinterpret_cast<uint64_t>(p1)/4096 << std::endl;
+        m_afarena.m_allocated_size = MAX_HEAP_SIZE;
+        m_afarena.m_begin = p1;
+        m_afarena.m_top= p1;
+        m_afarena.m_free_size = MAX_HEAP_SIZE;
+    }
 
+    if(m_afarena.m_free_chunks != nullptr) {
+        // deal with the case where we have free chunks
     }
 
     // let's say for simplistic reasons that for now alignment is 1 byte as we are working with chars and strings
 
-    // we need size that user requested and additional size of chunk
+    // this is actually wasting a lot of memory since m_prev and m_next are not used
     std::size_t total_needed_size = size + sizeof(Chunk);
     // what we will do is we will return to user pointer after chunk's block
 
@@ -122,8 +101,12 @@ void *AFMalloc::malloc(std::size_t size) {
     if(user_ptr == nullptr){
         // we need to extend arena
     }
-    assert(user_ptr == m_afarena.m_top);
+
+    // std::align moves m_top when we aligned it for the top
+    // TODO(afilipovic) enable std::construct
+    // we don't fill here prev and next as they are not used when chunk is in allocated state
     ::new (user_ptr) Chunk{total_needed_size, nullptr, nullptr}; // constructs chunk in place
+    // the size for alignment of a Chunk is already reduced from m_afarena.m_free_size
     m_afarena.m_free_size -=  total_needed_size;
     m_afarena.m_top = reinterpret_cast<void*>(reinterpret_cast<uint64_t>(user_ptr) + total_needed_size);
 
