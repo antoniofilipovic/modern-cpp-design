@@ -3,13 +3,16 @@
 
 #include "afmalloc.hpp"
 
-// TODO(afilipovic) util - copy pasta from afmalloc
 std::size_t get_alignment_size(void const* ptr, std::size_t alignment) {
 
-    // uintptr_t int_ptr{0};
-    // memcpy(&int_ptr, ptr, sizeof(uintptr_t));
+    uintptr_t int_ptr{0};
+    // memory pointer is pointer to address
+    // pointer is variable which holds address of object
+    // ptr = address of memory block
+    // &ptr = pointer to address of memory block
+    memcpy(&int_ptr, &ptr, sizeof(uintptr_t));
     // might be undefined, but we are not casting away const ness
-    const auto int_ptr = reinterpret_cast<uintptr_t>(const_cast<void *>(ptr));
+    //const auto int_ptr = reinterpret_cast<uintptr_t>(const_cast<void *>(ptr));
     const auto aligned_ptr_int = (int_ptr - 1u + alignment) & -alignment;
     return  aligned_ptr_int - int_ptr;
 }
@@ -28,7 +31,7 @@ TEST(AfMallocTest, TestAfMallocGet3Chunks){
     void *ptr = af_malloc.malloc(10);
     char *first_str = reinterpret_cast<char *>(ptr);
     strcpy(first_str, "baba");
-    const std::size_t first_ptr_usage_size = sizeof(Chunk) + 10;
+    const std::size_t first_ptr_usage_size = sizeof(Chunk) + 10; // 34
     ASSERT_EQ(total_allocated_size - first_ptr_usage_size, af_malloc.getFreeSize());
 
     const void *first_ptr_top = af_malloc.getTop();
@@ -44,14 +47,14 @@ TEST(AfMallocTest, TestAfMallocGet3Chunks){
     // begin should not change
     ASSERT_EQ(first_ptr_begin, af_malloc.getBegin());
     const std::size_t alignment_size_for_second_chunk = get_alignment_size(first_ptr_top, alignof(Chunk));
-    ASSERT_EQ(6, alignment_size_for_second_chunk);
+
     // TODO check: not sure if this is really 48 where we can store it next
     // should not we be able to store it on 8 byte boundary
 
     // 40 is a number divisible with 8 which is alignment of Chunk
     // chunk can be stored on 8 byte alignment boundary
     // sizeof Chunk is 24 bytes
-    ASSERT_GE(40, first_ptr_usage_size);
+    ASSERT_EQ(6, alignment_size_for_second_chunk);
     ASSERT_EQ(alignment_size_for_second_chunk, 40 - first_ptr_usage_size);
 
     // top was moved from the place where it was before to the new place. In between there should be allocation of
@@ -83,13 +86,8 @@ TEST(AfMallocTest, TestAfMallocGet3Chunks){
     const std::size_t alignment_size_for_third_chunk = get_alignment_size(second_top, alignof(Chunk));
     ASSERT_EQ(7, alignment_size_for_third_chunk);
 
-
-
-
-
     af_malloc.free(ptr);
     af_malloc.free(second_ptr);
     af_malloc.free(third_ptr);
-
 
 }
