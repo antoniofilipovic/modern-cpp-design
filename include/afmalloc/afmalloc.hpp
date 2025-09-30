@@ -1,12 +1,38 @@
 #pragma once
 #include <cstdint>
+#include <bit>
+static_assert(std::endian::native == std::endian::little);
 
 struct Chunk{
+  std::size_t previous_size{0};
   std::size_t m_size{0}; // this is chunk total size
   Chunk *m_prev{nullptr};
   Chunk *m_next{nullptr};
 };
-static_assert(sizeof(Chunk) == 24, "Expected size of chunk to be 24");
+
+// When the chunk is allocated we store the user object from m_prev forwards
+
+// allocated chunk looks like this
+
+/// --  prev_size <- this is set only if the previous chunk is free
+/// --  size <- size of the current chunk
+/// -- user data
+/// -- user data
+///   [.....]
+///
+///
+///  free chunk looks like this
+///  prev_size is set if the previous chunk is free. In our algorithm this should not happen as we coalesce two free chunks
+///  size
+///  m_prev
+///  m_next ptr
+
+
+static_assert(sizeof(std::size_t) == 8);
+static_assert(sizeof(Chunk) == 32, "Expected size of chunk to be 32");
+static_assert(alignof(Chunk) == 8);
+static std::size_t PREV_FREE = 1 << 63;
+
 
 // 2.
 struct AFArena{
@@ -63,9 +89,5 @@ class AFMalloc{
     ~AFMalloc();
 
     private :
-        // 1. How to know if chunk is in use or not
-        // 2. chunk when it is allocated it will have size set and
-        //  m_prev and m_next will be nullptr
-
-    AFArena m_afarena{};
+      AFArena m_afarena{};
 };
