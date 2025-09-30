@@ -4,7 +4,7 @@
 static_assert(std::endian::native == std::endian::little);
 
 struct Chunk{
-  std::size_t previous_size{0};
+  std::size_t m_previous_size{0};
   std::size_t m_size{0}; // this is chunk total size
   Chunk *m_prev{nullptr};
   Chunk *m_next{nullptr};
@@ -31,7 +31,7 @@ struct Chunk{
 static_assert(sizeof(std::size_t) == 8);
 static_assert(sizeof(Chunk) == 32, "Expected size of chunk to be 32");
 static_assert(alignof(Chunk) == 8);
-static std::size_t PREV_FREE = 1 << 63;
+static std::size_t PREV_FREE = 1ul << 63;
 
 
 // 2.

@@ -19,12 +19,35 @@ static_assert(SIZE_OF_SIZE == 8);
 constexpr std::size_t ALIGNMENT = 2 * SIZE_OF_SIZE;
 constexpr std::size_t ALIGNMENT_MASK = ALIGNMENT - 1;
 constexpr std::size_t CHUNK_SIZE = sizeof(Chunk);
+constexpr std::size_t HEAD_OF_CHUNK = offsetof(Chunk, m_prev);
+static_assert(HEAD_OF_CHUNK == 16);
+
+
+Chunk *moveToThePreviousChunk(void *ptr, std::size_t size) {
+    return reinterpret_cast<Chunk *>(reinterpret_cast<uintptr_t>(ptr) - size);;
+}
+
+Chunk *moveToTheNextChunk(void *ptr, std::size_t size) {
+    return reinterpret_cast<Chunk *>(reinterpret_cast<uintptr_t>(ptr) - size);;
+}
+
+void* moveToTheNextPlaceInMem(void *ptr, std::size_t size) {
+    return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ptr) + size);
+}
+
+void* moveToThePreviousPlaceInMem(void *ptr, std::size_t size) {
+    return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ptr) - size);
+}
+
+std::size_t getSize(Chunk *chunk) {
+    return chunk->m_size & ~PREV_FREE;
+}
 
 // Once deallocation is done, we write to the next chunk that prev_size is our size current, and we write to
 // ourselves that we are not in use
 // That should enable merging of two chunks
 void AFMalloc::free(void *p) {
-    auto *free_chunk = reinterpret_cast<Chunk *>(reinterpret_cast<uint64_t>(p) - sizeof(Chunk));
+    auto *free_chunk = reinterpret_cast<Chunk *>(reinterpret_cast<uint64_t>(p) - HEAD_OF_CHUNK);
     //free_chunk->m_size;
     //free_chunk->inUse=false;
 
@@ -35,36 +58,46 @@ void AFMalloc::free(void *p) {
     // []
 
     // linking chunks in the list of free chunks is good but let's skip it now
-    
-    // we need to merge chunks
-    // How do we differentiate between allocated chunk and a free chunk?
+
+    // Here we want to check if the chunk in the physical memory before us has actually
+    // been freed. If so, we can try to merge those two
     if(free_chunk->m_size & PREV_FREE) {
         // previous chunk is free, we need to merge them
-        std::size_t prev_size{0}; // this should hold the size of the user space before us
-        std::size_t *prev_size_ptr = reinterpret_cast<std::size_t *>(free_chunk) - sizeof(std::size_t);
-        std::memcpy(&prev_size, prev_size_ptr, sizeof(std::size_t));
+        std::size_t prev_size = free_chunk->m_previous_size;
 
         /// Then we need to go to that place in the memory
-        auto *chunk_before = reinterpret_cast<Chunk *>(reinterpret_cast<uintptr_t>(free_chunk) - prev_size - sizeof(Chunk));
-        chunk_before->m_size = prev_size + sizeof(Chunk) + free_chunk->m_size;
-
-        auto *data_start = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(chunk_before) + sizeof(Chunk));
-        memset(data_start, 0, chunk_before->m_size);
+        auto *chunk_before = moveToThePreviousChunk(free_chunk, prev_size);
+        chunk_before->m_size = prev_size + free_chunk->m_size;
 
         free_chunk = chunk_before;
+
+        auto *data_start =  moveToTheNextPlaceInMem(free_chunk, HEAD_OF_CHUNK); // move to the place where data starts
+        memset(data_start, 0, chunk_before->m_size);
     }
 
-    Chunk *infront = reinterpret_cast<Chunk*>(reinterpret_cast<uintptr_t>(free_chunk) + free_chunk->m_size);
+    auto *nextChunk = moveToTheNextChunk(free_chunk, free_chunk->m_size);
 
     // we are reaching at boundary, we can't do anything here
-    if (infront >= m_afarena.m_top) {
+    if (nextChunk >= m_afarena.m_top) {
+        // here we should actually merge our chunk with the top, and that way we have extended the unlimited free chunk
         return;
     }
-    Chunk *two_hops_infront =  reinterpret_cast<Chunk*>(reinterpret_cast<uintptr_t>(infront) + infront->m_size);
+    Chunk *chunkTwoHopsInfront =  moveToTheNextChunk(nextChunk, nextChunk->m_size);
 
-    if(two_hops_infront->m_size & PREV_FREE) {
-        // infront is free so we need to merge that one too
-        free_chunk->m_size = free_chunk->m_size + infront->m_size + sizeof(Chunk);
+    if(static_cast<void*>(chunkTwoHopsInfront) >= m_afarena.m_top) {
+        // we are at the boundary. This means that nextChunk is allocated. Because if it would be free
+        // we would extend m_top
+        // Here we need to write that we are free
+        nextChunk->m_size |= PREV_FREE;
+    }
+
+    if(chunkTwoHopsInfront->m_size & PREV_FREE) {
+        // nextChunk is free so we need to merge that one too
+        free_chunk->m_size = free_chunk->m_size + nextChunk->m_size;
+        chunkTwoHopsInfront->m_size |= PREV_FREE;
+    }else {
+        // nextChunk is allocated, but we need to write to it that we are free
+        nextChunk->m_size |= PREV_FREE;
     }
 
     ///// c0:free_C1:allocated(p)_c2:free|allocated
@@ -181,7 +214,7 @@ void *AFMalloc::malloc(std::size_t size) {
     m_afarena.m_free_size -=  needed_size;
     m_afarena.m_top = reinterpret_cast<void*>(reinterpret_cast<uint64_t>(user_ptr) + needed_size);
 
-    return reinterpret_cast<void*>(reinterpret_cast<uint64_t>(user_ptr)+sizeof(Chunk));
+    return reinterpret_cast<void*>(reinterpret_cast<uint64_t>(user_ptr)+HEAD_OF_CHUNK);
 }
 
 void *AFMalloc::memAlign([[maybe_unused]] std::size_t alignment, [[maybe_unused]] std::size_t size) {
