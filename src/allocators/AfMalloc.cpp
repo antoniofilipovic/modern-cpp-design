@@ -44,9 +44,8 @@ bool isPrevFree(Chunk *chunk) {
 // That should enable merging of two chunks
 void AfMalloc::free(void *p) {
     auto *free_chunk = reinterpret_cast<Chunk *>(reinterpret_cast<uint64_t>(p) - HEAD_OF_CHUNK_SIZE);
-    // memset sets free_chunk->size_ / sizeof(int) bytes on 0 (int)
-    // this should always be free_chunk->size_ / sizeof(int) even number
-    memset(moveToTheNextPlaceInMem(p, HEAD_OF_CHUNK_SIZE), 0, free_chunk->size_ / sizeof(int));
+
+    memset(moveToTheNextPlaceInMem(p, HEAD_OF_CHUNK_SIZE), 0, free_chunk->size_);
     //free_chunk->m_size;
     //free_chunk->inUse=false;
     // TODO - clean up user space from the free chunk
