@@ -1,6 +1,6 @@
 #include <cassert>
 
-#include "afmalloc.hpp"
+#include "AfMalloc.hpp"
 #include <string>
 #include <iostream>
 #include <memory_resource>
@@ -28,11 +28,11 @@ struct noisy_allocator : std::pmr::memory_resource {
     return std::pmr::new_delete_resource()->is_equal(other);
   }
 
-  AFMalloc af_malloc;
+  AfMalloc af_malloc;
 };
 
 int main(){
-  AFMalloc af_malloc{false, 0};
+  AfMalloc af_malloc{false, 0};
   void *ptr = af_malloc.malloc(10);
   char *char_ptr = reinterpret_cast<char*>(ptr);
   char_ptr[0] = 'a';

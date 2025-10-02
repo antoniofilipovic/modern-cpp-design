@@ -16,6 +16,6 @@ target_sources(afmalloc
         PUBLIC
         ../../include/afmalloc/
         PRIVATE
-        afmalloc.cpp
+        AfMalloc.cpp
 )
 target_include_directories(afmalloc PUBLIC ../../include/afmalloc)
