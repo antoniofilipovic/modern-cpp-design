@@ -1,13 +1,74 @@
 #pragma once
 #include <cstdint>
 #include <bit>
+
 static_assert(std::endian::native == std::endian::little);
 
-struct Chunk{
-  std::size_t previous_size_{0};
-  std::size_t size_{0}; // this is chunk total size
-  Chunk *prev_{nullptr};
-  Chunk *next_{nullptr};
+static_assert(sizeof(std::size_t) == 8);
+
+static std::size_t PREV_FREE = 1ul << 63;
+
+// 32 pages, or 128kB
+constexpr std::size_t MAX_HEAP_SIZE = 32*4096;
+constexpr bool TRACKING{false};
+constexpr std::size_t SIZE_OF_SIZE = sizeof(std::size_t);
+static_assert(SIZE_OF_SIZE == 8);
+constexpr std::size_t ALIGNMENT = 2 * SIZE_OF_SIZE;
+constexpr std::size_t ALIGNMENT_MASK = ALIGNMENT - 1;
+static std::size_t HEAD_OF_CHUNK_SIZE = 16;
+
+
+class Chunk{
+  public:
+
+    Chunk(const std::size_t prev_size, const std::size_t size, Chunk *prev, Chunk *next): previous_size_(prev_size), size_(size), prev_(prev), next_(next) {}
+
+    [[nodiscard]] std::size_t getSize() const {
+      return size_ & ~PREV_FREE;
+    }
+
+    void setSize(const std::size_t size) {
+      size_ = (size & ~PREV_FREE);
+    }
+
+    [[nodiscard]] bool isPrevFree() const {
+      return size_ & PREV_FREE;
+    }
+
+    void setPrevFree() {
+      size_ |= PREV_FREE;
+    }
+
+    [[nodiscard]] std::size_t getPrevSize() const {
+      return previous_size_;
+    }
+
+    void setPrevSize(const std::size_t previous_size) {
+      previous_size_ = previous_size;
+    }
+
+    [[nodiscard]] Chunk * getPrev() {
+      return prev_;
+    }
+
+    [[nodiscard]] Chunk* getNext() {
+      return next_;
+    }
+
+    void setPrev(Chunk *prev) {
+      prev_ = prev;
+    }
+
+    void setNext(Chunk *next) {
+      next_ = next;
+    }
+
+  private:
+    std::size_t previous_size_{0};
+    std::size_t size_{0}; // this is chunk total size
+    Chunk *prev_{nullptr};
+    Chunk *next_{nullptr};
+
 };
 
 // When the chunk is allocated we store the user object from m_prev forwards
@@ -28,20 +89,9 @@ struct Chunk{
 ///  m_next ptr
 
 
-static_assert(sizeof(std::size_t) == 8);
 static_assert(sizeof(Chunk) == 32, "Expected size of chunk to be 32");
 static_assert(alignof(Chunk) == 8);
-static std::size_t PREV_FREE = 1ul << 63;
-
-constexpr std::size_t MAX_HEAP_SIZE = 32*4096; // 128kB
-constexpr bool TRACKING{false};
-constexpr std::size_t SIZE_OF_SIZE = sizeof(std::size_t);
-static_assert(SIZE_OF_SIZE == 8);
-constexpr std::size_t ALIGNMENT = 2 * SIZE_OF_SIZE;
-constexpr std::size_t ALIGNMENT_MASK = ALIGNMENT - 1;
 constexpr std::size_t CHUNK_SIZE = sizeof(Chunk);
-constexpr std::size_t HEAD_OF_CHUNK_SIZE = offsetof(Chunk, prev_);
-static_assert(HEAD_OF_CHUNK_SIZE == 16);
 
 /**
  *

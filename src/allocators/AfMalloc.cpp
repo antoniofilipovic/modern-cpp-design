@@ -12,15 +12,15 @@
  mmap(addr, (size), (prot), (flags)|MAP_ANONYMOUS|MAP_PRIVATE, -1, 0)
 
 
-
+static_assert(sizeof(long long int) == 8);
 
 
 Chunk *moveToThePreviousChunk(void *ptr, std::size_t size) {
-    return reinterpret_cast<Chunk *>(reinterpret_cast<uintptr_t>(ptr) - size);;
+    return reinterpret_cast<Chunk *>(reinterpret_cast<uintptr_t>(ptr) - size);
 }
 
 Chunk *moveToTheNextChunk(void *ptr, std::size_t size) {
-    return reinterpret_cast<Chunk *>(reinterpret_cast<uintptr_t>(ptr) + size);;
+    return reinterpret_cast<Chunk *>(reinterpret_cast<uintptr_t>(ptr) + size);
 }
 
 void* moveToTheNextPlaceInMem(void *ptr, std::size_t size) {
@@ -31,72 +31,67 @@ void* moveToThePreviousPlaceInMem(void *ptr, std::size_t size) {
     return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ptr) - size);
 }
 
-std::size_t getSize(Chunk *chunk) {
-    return chunk->size_ & ~PREV_FREE;
+
+
+void clearUpDataSpaceOfChunk(Chunk *chunk) {
+    auto *data_start =  moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE); // move to the place where data starts
+    memset(data_start, 0, chunk->getSize() - HEAD_OF_CHUNK_SIZE);
 }
 
-bool isPrevFree(Chunk *chunk) {
-    return chunk->size_ & PREV_FREE;
+// This should extend topChunk as much as possible
+// We might want to limit it at some point, I need to check how malloc does this part
+// TODO
+void extendTopChunk() {
+
 }
 
 // Once deallocation is done, we write to the next chunk that prev_size is our size current, and we write to
 // ourselves that we are not in use
+
 // That should enable merging of two chunks
 void AfMalloc::free(void *p) {
     auto *free_chunk = reinterpret_cast<Chunk *>(reinterpret_cast<uint64_t>(p) - HEAD_OF_CHUNK_SIZE);
 
-    memset(moveToTheNextPlaceInMem(p, HEAD_OF_CHUNK_SIZE), 0, free_chunk->size_);
-    //free_chunk->m_size;
-    //free_chunk->inUse=false;
-    // TODO - clean up user space from the free chunk
-    /// here
-    /// [Already freed chunk][Current free chunk][Free or allocated chunk]
-    ///
-    // This is where IN_USE bit comes into play
-    // []
-
-    // linking chunks in the list of free chunks is good but let's skip it now
+    clearUpDataSpaceOfChunk(free_chunk);
 
     // Here we want to check if the chunk in the physical memory before us has actually
     // been freed. If so, we can try to merge those two
-    if(isPrevFree(free_chunk)) {
+    if(free_chunk->isPrevFree()) {
         // previous chunk is free, we need to merge them
-        std::size_t prev_size = free_chunk->previous_size_;
+        std::size_t prev_size = free_chunk->getPrevSize();
 
         /// Then we need to go to that place in the memory
         auto *chunk_before = moveToThePreviousChunk(free_chunk, prev_size);
-        chunk_before->size_ = prev_size + getSize(free_chunk);
-
+        chunk_before->setSize( prev_size + free_chunk->getSize());
         free_chunk = chunk_before;
-
-        auto *data_start =  moveToTheNextPlaceInMem(free_chunk, HEAD_OF_CHUNK_SIZE); // move to the place where data starts
-        memset(data_start, 0, chunk_before->size_);
     }
 
-    auto *nextChunk = moveToTheNextChunk(free_chunk, free_chunk->size_);
+    auto *next_chunk = moveToTheNextChunk(free_chunk, free_chunk->getSize());
 
     // we are reaching at boundary, we can't do anything here
-    if (nextChunk >= af_arena_.top_) {
+    if (next_chunk >= af_arena_.top_) {
         // here we should actually merge our chunk with the top, and that way we have extended the unlimited free chunk
+        extendTopChunk();
         return;
     }
-    Chunk *chunkTwoHopsInfront =  moveToTheNextChunk(nextChunk, nextChunk->size_);
+    Chunk *chunk_two_hops_in_front =  moveToTheNextChunk(next_chunk, next_chunk->getSize());
 
-    if(static_cast<void*>(chunkTwoHopsInfront) >= af_arena_.top_) {
+    if(static_cast<void*>(chunk_two_hops_in_front) >= af_arena_.top_) {
         // we are at the boundary. This means that `nextChunk` is allocated. Because if it would be free
         // we would extend `top_` to include the additional free memory
         // Here we need to write that we are free
-        nextChunk->size_ |= PREV_FREE;
-        nextChunk->previous_size_ = free_chunk->size_;
+        // TODO is this correct?
+        next_chunk->setPrevFree();
+        next_chunk->setPrevSize(free_chunk->getSize());
     }
 
-    if(chunkTwoHopsInfront->size_ & PREV_FREE) {
+    if(chunk_two_hops_in_front->isPrevFree()) {
         // nextChunk is free so we need to merge that one too
-        free_chunk->size_ = free_chunk->size_ + nextChunk->size_;
-        chunkTwoHopsInfront->size_ |= PREV_FREE;
+        free_chunk->setSize(free_chunk->getSize() + next_chunk->getSize());
+        chunk_two_hops_in_front->setPrevFree();
     }else {
         // nextChunk is allocated, but we need to write to it that we are free
-        nextChunk->size_ |= PREV_FREE;
+        next_chunk->setPrevFree();
     }
 
     ///// c0:free_C1:allocated(p)_c2:free|allocated
@@ -107,17 +102,17 @@ void AfMalloc::free(void *p) {
     // last in first out
     if(af_arena_.free_chunks_ == nullptr) {
         af_arena_.free_chunks_ = free_chunk;
-        af_arena_.free_chunks_->next_ = free_chunk;
-        af_arena_.free_chunks_->prev_ = free_chunk;
+        af_arena_.free_chunks_->setNext(free_chunk);
+        af_arena_.free_chunks_->setPrev(free_chunk);
         return;
     }
     Chunk *last_in_chunk = af_arena_.free_chunks_;
-    Chunk *first_in_chunk = last_in_chunk->prev_;
-    free_chunk->next_ = last_in_chunk;
-    free_chunk->prev_ = first_in_chunk;
+    Chunk *first_in_chunk = last_in_chunk->getPrev();
+    free_chunk->setNext(last_in_chunk);
+    free_chunk->setPrev(first_in_chunk);
 
-    last_in_chunk->prev_ = free_chunk;
-    first_in_chunk->next_ = free_chunk;
+    last_in_chunk->setPrev(free_chunk);
+    first_in_chunk->setNext(free_chunk);
 
     af_arena_.free_chunks_ = free_chunk;
 
@@ -174,7 +169,8 @@ void *AfMalloc::malloc(std::size_t size) {
     }
 
     // if there are no free chunks, and we have no enough size, we need to allocate a new block
-    if(af_arena_.free_size_ < needed_size) {
+    // If there is less then HEAD_OF_CHUNK_SIZE left, we need to
+    if(static_cast<long>(af_arena_.free_size_) - static_cast<long>(HEAD_OF_CHUNK_SIZE) < static_cast<long>(needed_size)) {
         if(needed_size > MAX_HEAP_SIZE) {
             assert(false); // unsupported case
         }
