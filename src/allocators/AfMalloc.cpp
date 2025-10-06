@@ -4,6 +4,7 @@
 #include <cassert>
 #include <memory>
 #include <cstring>
+
 #include "AfMalloc.hpp"
 
 #include <sys/mman.h>
@@ -45,6 +46,34 @@ void extendTopChunk() {
 
 }
 
+void AfMalloc::removeFromFreeChunks(Chunk* chunk) {
+    Chunk *freeChunkLinkedList = af_arena_.free_chunks_;
+    bool isIn{false};
+    do {
+        if(freeChunkLinkedList == chunk) {
+            isIn = true;
+            break;
+        }
+        freeChunkLinkedList = freeChunkLinkedList->getNext();
+    }while(freeChunkLinkedList != nullptr && freeChunkLinkedList != af_arena_.free_chunks_);
+    assert(isIn);
+    auto *nextChunk = chunk->getNext();
+    auto *prevChunk = chunk->getPrev();
+    // in case chunk points on itself
+    if(nextChunk == prevChunk && nextChunk == chunk) {
+        af_arena_.free_chunks_ = nullptr;
+        return;
+    }
+
+    // 2<--1<->2-->1
+    nextChunk->setPrev(prevChunk);
+    prevChunk->setNext(nextChunk);
+
+    if(af_arena_.free_chunks_ == chunk) {
+        af_arena_.free_chunks_ = nextChunk;
+    }
+}
+
 // Once deallocation is done, we write to the next chunk that prev_size is our size current, and we write to
 // ourselves that we are not in use
 
@@ -62,7 +91,7 @@ void AfMalloc::free(void *p) {
 
         /// Then we need to go to that place in the memory
         auto *chunk_before = moveToThePreviousChunk(free_chunk, prev_size);
-        // TODO (remove chunk from the list of free chunks)
+        removeFromFreeChunks(chunk_before);
         chunk_before->setSize( prev_size + free_chunk->getSize());
         free_chunk = chunk_before;
         clearUpDataSpaceOfChunk(free_chunk);

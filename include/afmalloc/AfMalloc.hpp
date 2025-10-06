@@ -63,6 +63,8 @@ class Chunk{
       next_ = next;
     }
 
+
+
   private:
     std::size_t previous_size_{0};
     std::size_t size_{0}; // this is chunk total size
@@ -159,6 +161,8 @@ class AfMalloc{
 
     }
 
-  private :
+  private:
+      // removes this chunk from the list of free chunks
+      void removeFromFreeChunks(Chunk* chunk);
       AfArena af_arena_{};
 };
