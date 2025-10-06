@@ -50,7 +50,7 @@ void extendTopChunk() {
 
 // That should enable merging of two chunks
 void AfMalloc::free(void *p) {
-    auto *free_chunk = reinterpret_cast<Chunk *>(reinterpret_cast<uint64_t>(p) - HEAD_OF_CHUNK_SIZE);
+    auto *free_chunk = moveToThePreviousChunk(p, HEAD_OF_CHUNK_SIZE);
 
     clearUpDataSpaceOfChunk(free_chunk);
 
@@ -62,39 +62,41 @@ void AfMalloc::free(void *p) {
 
         /// Then we need to go to that place in the memory
         auto *chunk_before = moveToThePreviousChunk(free_chunk, prev_size);
+        // TODO (remove chunk from the list of free chunks)
         chunk_before->setSize( prev_size + free_chunk->getSize());
         free_chunk = chunk_before;
+        clearUpDataSpaceOfChunk(free_chunk);
     }
 
     auto *next_chunk = moveToTheNextChunk(free_chunk, free_chunk->getSize());
+
+    // This works even if we are at the at top, as on the top chunk we don't write size
+    Chunk *chunk_two_hops_in_front =  moveToTheNextChunk(next_chunk, next_chunk->getSize());
+
+    // if the next_chunk is free, we will merge the `freeChunk` and the `nextChunk`
+    // otherwise `nextChunk` is allocated, and we can't merge these two
+    if(chunk_two_hops_in_front->isPrevFree()) {
+        // nextChunk is free so we need to merge that one too
+        free_chunk->setSize(free_chunk->getSize() + next_chunk->getSize());
+        chunk_two_hops_in_front->setPrevFree();
+        chunk_two_hops_in_front->setPrevSize(free_chunk->getSize());
+    }
+    // when the nextChunk is free, if chunkTwoHopsInFront was free, it would be merged in the step before.
+    // This way we know that our chunk is free, and only one step around us can be free
+
+
+    next_chunk = moveToTheNextChunk(free_chunk, free_chunk->getSize());
+
+    // Set on the next that chunk before is free
+    next_chunk->setPrevFree();
+    next_chunk->setPrevSize(free_chunk->getSize());
+
 
     // we are reaching at boundary, we can't do anything here
     if (next_chunk >= af_arena_.top_) {
         // here we should actually merge our chunk with the top, and that way we have extended the unlimited free chunk
         extendTopChunk();
-        return;
     }
-    Chunk *chunk_two_hops_in_front =  moveToTheNextChunk(next_chunk, next_chunk->getSize());
-
-    if(static_cast<void*>(chunk_two_hops_in_front) >= af_arena_.top_) {
-        // we are at the boundary. This means that `nextChunk` is allocated. Because if it would be free
-        // we would extend `top_` to include the additional free memory
-        // Here we need to write that we are free
-        // TODO is this correct?
-        next_chunk->setPrevFree();
-        next_chunk->setPrevSize(free_chunk->getSize());
-    }
-
-    if(chunk_two_hops_in_front->isPrevFree()) {
-        // nextChunk is free so we need to merge that one too
-        free_chunk->setSize(free_chunk->getSize() + next_chunk->getSize());
-        chunk_two_hops_in_front->setPrevFree();
-    }else {
-        // nextChunk is allocated, but we need to write to it that we are free
-        next_chunk->setPrevFree();
-    }
-
-    ///// c0:free_C1:allocated(p)_c2:free|allocated
     /// First we need to get the previous size of the chunk before us
     // wipe out the memory too
 
@@ -207,9 +209,9 @@ void *AfMalloc::malloc(std::size_t size) {
     ::new (user_ptr) Chunk{0, needed_size, nullptr, nullptr};
 
     af_arena_.free_size_ -=  needed_size;
-    af_arena_.top_ = reinterpret_cast<void*>(reinterpret_cast<uint64_t>(user_ptr) + needed_size);
+    af_arena_.top_ = moveToTheNextPlaceInMem(af_arena_.top_, needed_size);
 
-    return reinterpret_cast<void*>(reinterpret_cast<uint64_t>(user_ptr)+HEAD_OF_CHUNK_SIZE);
+    return moveToTheNextPlaceInMem(user_ptr, HEAD_OF_CHUNK_SIZE);
 }
 
 void *AfMalloc::memAlign([[maybe_unused]] std::size_t alignment, [[maybe_unused]] std::size_t size) {
