@@ -95,6 +95,15 @@ static_assert(sizeof(Chunk) == 32, "Expected size of chunk to be 32");
 static_assert(alignof(Chunk) == 8);
 constexpr std::size_t CHUNK_SIZE = sizeof(Chunk);
 
+
+Chunk *moveToThePreviousChunk(void *ptr, std::size_t size);
+
+Chunk *moveToTheNextChunk(void *ptr, std::size_t size);
+
+void* moveToTheNextPlaceInMem(void *ptr, std::size_t size);
+
+void* moveToThePreviousPlaceInMem(void *ptr, std::size_t size);
+
 /**
  *
  * @param size size for which to calculate how much we need to allocate
@@ -152,6 +161,10 @@ class AfMalloc{
 
     [[nodiscard]] void const *getBegin() const {
       return af_arena_.begin_;
+    }
+
+    Chunk *getFreeChunks() {
+      return af_arena_.free_chunks_;
     }
 
     ~AfMalloc();

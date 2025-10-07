@@ -91,6 +91,8 @@ void AfMalloc::free(void *p) {
 
         /// Then we need to go to that place in the memory
         auto *chunk_before = moveToThePreviousChunk(free_chunk, prev_size);
+        // if we don't do this here, then we will later have a problem
+        // with merging two chunks and iterating over free chunks because of zeroing of memory
         removeFromFreeChunks(chunk_before);
         chunk_before->setSize( prev_size + free_chunk->getSize());
         free_chunk = chunk_before;
