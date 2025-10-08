@@ -10,7 +10,8 @@ target_sources(allocators
 target_include_directories(allocators PUBLIC ../../include/modern_cpp_design/allocators)
 
 
-add_library(afmalloc STATIC)
+add_library(afmalloc STATIC
+        AfMalloc.cpp)
 
 target_sources(afmalloc
         PUBLIC

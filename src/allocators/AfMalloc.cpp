@@ -79,6 +79,10 @@ void AfMalloc::removeFromFreeChunks(Chunk* chunk) {
 
 // That should enable merging of two chunks
 void AfMalloc::free(void *p) {
+    /**
+     * If chunk next to the top chunk is free, then we extend top chunk. That is why we never have
+     * inside the top chunk the prev_size or isPrevFree set inside the size although there is enough space for that
+    */
     auto *free_chunk = moveToThePreviousChunk(p, HEAD_OF_CHUNK_SIZE);
 
     clearUpDataSpaceOfChunk(free_chunk);
@@ -109,6 +113,10 @@ void AfMalloc::free(void *p) {
     if(chunk_two_hops_in_front->isPrevFree()) {
         // nextChunk is free so we need to merge that one too
         free_chunk->setSize(free_chunk->getSize() + next_chunk->getSize());
+        // TODO free_chunk and next chunk are merged, we should remove next_chunk from the list of chunks
+        removeFromFreeChunks(next_chunk);
+        clearUpDataSpaceOfChunk(free_chunk);
+        // TODO zero memory
         chunk_two_hops_in_front->setPrevFree();
         chunk_two_hops_in_front->setPrevSize(free_chunk->getSize());
     }
@@ -118,16 +126,19 @@ void AfMalloc::free(void *p) {
 
     next_chunk = moveToTheNextChunk(free_chunk, free_chunk->getSize());
 
-    // Set on the next that chunk before is free
-    next_chunk->setPrevFree();
-    next_chunk->setPrevSize(free_chunk->getSize());
 
-
-    // we are reaching at boundary, we can't do anything here
-    if (next_chunk >= af_arena_.top_) {
+    if(next_chunk < af_arena_.top_) {
+        // Set on the next that chunk before is free
+        next_chunk->setPrevFree();
+        next_chunk->setPrevSize(free_chunk->getSize());
+    }else {
         // here we should actually merge our chunk with the top, and that way we have extended the unlimited free chunk
-        extendTopChunk();
+        //extendTopChunk();
+
+        next_chunk->setPrevFree();
+        next_chunk->setPrevSize(free_chunk->getSize());
     }
+
     /// First we need to get the previous size of the chunk before us
     // wipe out the memory too
 

@@ -155,11 +155,11 @@ class AfMalloc{
       return af_arena_.allocated_size_;
     }
 
-    [[nodiscard]]  void const * getTop() const {
+    [[nodiscard]]  void * getTop() const {
       return af_arena_.top_;
     }
 
-    [[nodiscard]] void const *getBegin() const {
+    [[nodiscard]] void *getBegin() const {
       return af_arena_.begin_;
     }
 
