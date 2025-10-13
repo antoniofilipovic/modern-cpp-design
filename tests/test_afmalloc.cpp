@@ -169,13 +169,13 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3Chunks) {
     af_malloc.free(third_ptr);
 
     Chunk *third_free_chunk = af_malloc.getFreeChunks();
-    ASSERT_EQ(third_free_chunk, first_chunk);
-    ASSERT_EQ(third_free_chunk->getNext(), first_chunk);
-    ASSERT_EQ(third_free_chunk->getPrev(), first_chunk);
+    ASSERT_EQ(third_free_chunk, nullptr);
+    ASSERT_EQ(third_chunk->getSize(), 0);
+    ASSERT_EQ(third_chunk->isPrevFree(), false);
+    ASSERT_EQ(third_chunk->getNext(), nullptr);
+    ASSERT_EQ(third_chunk->getPrev(), nullptr);
 
-    ASSERT_EQ(third_free_chunk->isPrevFree(), false);
-    ASSERT_EQ(third_free_chunk->getPrevSize(), 0);
-    ASSERT_EQ(third_free_chunk->getSize(), 128); // 80 + 48
+    ASSERT_EQ(af_malloc.getTop(), first_chunk);
 
 }
 
