@@ -39,15 +39,23 @@ void clearUpDataSpaceOfChunk(Chunk *chunk) {
     memset(data_start, 0, chunk->getSize() - HEAD_OF_CHUNK_SIZE);
 }
 
-// This should extend topChunk as much as possible
-// We might want to limit it at some point, I need to check how malloc does this part
-// TODO
-void extendTopChunk() {
 
+void AfMalloc::extendTopChunk(){
+    auto *top_chunk = static_cast<Chunk *>(getTop());
+    assert(top_chunk->isPrevFree());
+    Chunk *prev_chunk = moveToThePreviousChunk(top_chunk, top_chunk->getPrevSize());
+    removeFromFreeChunks(prev_chunk);
+    clearUpDataSpaceOfChunk(prev_chunk);
+    af_arena_.top_ = prev_chunk;
+    prev_chunk->unsetPrevFree();
+    prev_chunk->setSize(0);
 }
 
 void AfMalloc::removeFromFreeChunks(Chunk* chunk) {
     Chunk *freeChunkLinkedList = af_arena_.free_chunks_;
+    if(freeChunkLinkedList == nullptr) {
+        return;
+    }
     bool isIn{false};
     do {
         if(freeChunkLinkedList == chunk) {
@@ -113,10 +121,8 @@ void AfMalloc::free(void *p) {
     if(chunk_two_hops_in_front->isPrevFree()) {
         // nextChunk is free so we need to merge that one too
         free_chunk->setSize(free_chunk->getSize() + next_chunk->getSize());
-        // TODO free_chunk and next chunk are merged, we should remove next_chunk from the list of chunks
         removeFromFreeChunks(next_chunk);
         clearUpDataSpaceOfChunk(free_chunk);
-        // TODO zero memory
         chunk_two_hops_in_front->setPrevFree();
         chunk_two_hops_in_front->setPrevSize(free_chunk->getSize());
     }
@@ -132,11 +138,13 @@ void AfMalloc::free(void *p) {
         next_chunk->setPrevFree();
         next_chunk->setPrevSize(free_chunk->getSize());
     }else {
-        // here we should actually merge our chunk with the top, and that way we have extended the unlimited free chunk
-        //extendTopChunk();
-
+        // in this part of code we extend top to the free_chunk
+        // this means we can't add free chunk to the free list
         next_chunk->setPrevFree();
         next_chunk->setPrevSize(free_chunk->getSize());
+        // here we should actually merge our chunk with the top, and that way we have extended the unlimited free chunk
+        extendTopChunk();
+        return;
     }
 
     /// First we need to get the previous size of the chunk before us

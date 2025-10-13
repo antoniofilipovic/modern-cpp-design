@@ -39,6 +39,10 @@ class Chunk{
       size_ |= PREV_FREE;
     }
 
+    void unsetPrevFree() {
+      size_ &= ~PREV_FREE;
+    }
+
     [[nodiscard]] std::size_t getPrevSize() const {
       return previous_size_;
     }
@@ -170,9 +174,9 @@ class AfMalloc{
     ~AfMalloc();
 
 
-    void printArenasMemory() {
+    void printArenasMemory() {}
 
-    }
+    void extendTopChunk();
 
   private:
       // removes this chunk from the list of free chunks
