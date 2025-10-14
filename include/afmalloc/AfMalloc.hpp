@@ -144,11 +144,19 @@ class AfMalloc{
   public:
     explicit AfMalloc() = default;
 
-
+    /**
+     * Main malloc function used for satisfying user requests
+     * @param size size user needs
+     * @return the pointer to the memory object
+    */
     void *malloc(std::size_t size);
 
     void *memAlign(std::size_t alignment, std::size_t size);
 
+    /**
+      *
+      * @param p chunk
+    */
     void free(void *p);
 
     [[nodiscard]] std::size_t getFreeSize() const {
@@ -167,6 +175,10 @@ class AfMalloc{
       return af_arena_.begin_;
     }
 
+    /**
+      *
+      * @return
+    */
     Chunk *getFreeChunks() {
       return af_arena_.free_chunks_;
     }

@@ -252,6 +252,31 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3ChunksLIFO) {
     ASSERT_EQ(first_chunk->getPrev(), nullptr);
 }
 
+
+TEST_F(BasicAfMallocSizeAllocated, TestReusingFreedChunks) {
+    AfMalloc af_malloc{};
+
+    void *ptr = af_malloc.malloc(10);
+    Chunk *first_chunk = moveToThePreviousChunk(ptr, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(first_chunk->getSize(), 32);
+    void *second_ptr = af_malloc.malloc(10);
+    Chunk *second_chunk = moveToThePreviousChunk(second_ptr, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(second_chunk->getSize(), 32);
+    void *third_ptr = af_malloc.malloc(25);
+    Chunk *third_chunk = moveToThePreviousChunk(third_ptr, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(third_chunk->getSize(), 48);
+
+    af_malloc.free(second_ptr);
+    void *fourth_ptr = af_malloc.malloc(10);
+
+    Chunk *fourth_chunk = moveToThePreviousChunk(fourth_ptr, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(second_chunk, fourth_chunk);
+}
+
+TEST_F(BasicAfMallocSizeAllocated, TestReusingRecentlyFreedChunk) {
+    
+}
+
 // test for unaligned access
 // create a simple struct which needs to be aligned on 128 bytes
 

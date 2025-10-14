@@ -201,23 +201,61 @@ std::size_t getMallocNeededSize(std::size_t size) {
     // Other fields are not used when chunk is allocated. So when our chunk is allocated the next chunk does not
     // use prev_size field and we don't use the fields for m_prev and m_next
     //
+
+    // Anatomy of the chunk in this case
+    // ----|+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    // ----| a) Size of previous chunk   |
+    // allocated chunk starts here-->+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    // ----| b) Current size            |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    //     | c) Ptr to next chunk              |
+    //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    //     | d1) Ptr to previous chunk          |
+    //     | d2) rest of the user data |
+    // next_chunk starts -> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    ///   | e) Previous size |
+    ///   all again
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    // Now, to satisfy user request of the `size` bytes we have following space at use:
+    //      c) + d) + e) (e from the next chunk)
+    // c) and d1) are used as user space when chunk is allocated
+    // e) which is memory from the next chunk is also used as a free space for our chunk
+    // in other words: c) + d) + e) must be bigger or equal to the `size`
+    // ( (c + d + e) + b) is actually one chunk, but which starts at the current_size , instead of prev_size_
+    // ((size) +  (b)) -> size + SIZE_OF_SIZE
+    // In that formula we add also ALIGNMENT_MASK
+
     return (size + SIZE_OF_SIZE + ALIGNMENT_MASK) & ~ALIGNMENT_MASK;
 
 }
 void *AfMalloc::malloc(std::size_t size) {
-    // We need to think that
-    // 1. We allocate 8bytes at least for user
-    // 2. Those 8 bytes are aligned on the std::size_t so we can write down the size
 
-
-    // if there is no enough free memory
-    const std::size_t alignment_size = af_arena_.top_ != nullptr ? get_alignment_size(af_arena_.top_, alignof(Chunk)): 0;
-    // assert here that m_afarena.m_top is always on the 16 byte boundary
     std::size_t needed_size =  getMallocNeededSize(size);
 
     // if there are free chunks, try to use them
     if(af_arena_.free_chunks_ != nullptr) {
+        // Next to the free chunk there will always be allocated chunk
+        // Hence prev_size of the allocated chunk can be used
         // deal with the case where we have free chunks
+
+        // Free chunks are double linked list, so we can get
+        Chunk *start  = af_arena_.free_chunks_;
+        Chunk *free_chunk = af_arena_.free_chunks_;
+        Chunk *match{nullptr};
+        while(true) {
+            if(free_chunk->getSize()  >= needed_size) {
+                match = free_chunk;
+                break;
+            }
+            free_chunk = free_chunk->getNext();
+
+            if(free_chunk == start) {
+                break;
+            }
+        }
+
+        removeFromFreeChunks(match);
+        return moveToTheNextPlaceInMem(match, HEAD_OF_CHUNK_SIZE);
     }
 
     // if there are no free chunks, and we have no enough size, we need to allocate a new block
