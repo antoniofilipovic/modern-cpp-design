@@ -87,6 +87,7 @@ void AfMalloc::removeFromFreeChunks(Chunk* chunk) {
 
 // That should enable merging of two chunks
 void AfMalloc::free(void *p) {
+    // TODO detect double free -> that should be easy?
     /**
      * If chunk next to the top chunk is free, then we extend top chunk. That is why we never have
      * inside the top chunk the prev_size or isPrevFree set inside the size although there is enough space for that

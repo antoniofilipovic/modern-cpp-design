@@ -274,7 +274,50 @@ TEST_F(BasicAfMallocSizeAllocated, TestReusingFreedChunks) {
 }
 
 TEST_F(BasicAfMallocSizeAllocated, TestReusingRecentlyFreedChunk) {
-    
+    AfMalloc af_malloc{};
+
+    auto *ptr = af_malloc.malloc(25);
+    Chunk *first_chunk = moveToThePreviousChunk(ptr, HEAD_OF_CHUNK_SIZE);
+    auto *ptr2 = af_malloc.malloc(50);
+    Chunk *second_chunk = moveToThePreviousChunk(ptr2, HEAD_OF_CHUNK_SIZE);
+
+    auto *ptr3 = af_malloc.malloc(45);
+    Chunk *third_chunk = moveToThePreviousChunk(ptr3, HEAD_OF_CHUNK_SIZE);
+
+    auto *ptr4 = af_malloc.malloc(60);
+    Chunk *fourth_chunk = moveToThePreviousChunk(ptr4, HEAD_OF_CHUNK_SIZE);
+
+    af_malloc.free(ptr3);
+    af_malloc.free(ptr);
+    ASSERT_EQ(first_chunk->getSize(), 48);
+    ASSERT_EQ(second_chunk->isPrevFree(), true);
+    ASSERT_EQ(fourth_chunk->isPrevFree(), true);
+    ASSERT_EQ(third_chunk->getSize(), 64);
+
+    ASSERT_EQ(af_malloc.getFreeChunks(), first_chunk);
+
+    void *ptr5 = af_malloc.malloc(10);
+    ASSERT_EQ(ptr5, ptr);
+    void *ptr6 = af_malloc.malloc(44);
+    ASSERT_EQ(ptr6, ptr3);
+
+    ASSERT_EQ(af_malloc.getFreeChunks(), nullptr);
+
+    ASSERT_EQ(first_chunk->getSize(), 48);
+    ASSERT_EQ(second_chunk->isPrevFree(), false);
+    ASSERT_EQ(fourth_chunk->isPrevFree(), false);
+    ASSERT_EQ(third_chunk->getSize(), 64);
+
+    // TODO bug is that we don't reset isPrevFree on allocated
+
+    af_malloc.free(ptr);
+    af_malloc.free(ptr2);
+    af_malloc.free(ptr3);
+    af_malloc.free(ptr4);
+}
+
+TEST_F(BasicAfMallocSizeAllocated, DoubleFree) {
+
 }
 
 // test for unaligned access
