@@ -113,6 +113,8 @@ void AfMalloc::free(void *p) {
     }
 
     auto *next_chunk = moveToTheNextChunk(free_chunk, free_chunk->getSize());
+    // Small assert to check our chunk is not free until now. It can't be as we are only merging it now.
+    assert(!next_chunk->isPrevFree());
 
     // This works even if we are at the at top, as on the top chunk we don't write size
     Chunk *chunk_two_hops_in_front =  moveToTheNextChunk(next_chunk, next_chunk->getSize());
@@ -256,6 +258,12 @@ void *AfMalloc::malloc(std::size_t size) {
         }
 
         removeFromFreeChunks(match);
+        Chunk* next_chunk = moveToTheNextChunk(match, match->getSize());
+        // next chunk only knows that we are free
+        next_chunk->unsetPrevFree();
+        // this will be used by our chunk also, so we need to zero the memory
+        next_chunk->setPrevSize(0);
+        // do we need to call construct at here?
         return moveToTheNextPlaceInMem(match, HEAD_OF_CHUNK_SIZE);
     }
 
@@ -294,11 +302,14 @@ void *AfMalloc::malloc(std::size_t size) {
     // we don't fill here prev and next as they are not used when chunk is in allocated state
     // constructs chunk in place
 
-    auto *user_ptr = af_arena_.top_;
-    ::new (user_ptr) Chunk{0, needed_size, nullptr, nullptr};
+    void *user_ptr = af_arena_.top_;
+
+
+    Chunk *user_chunk = std::construct_at(reinterpret_cast<Chunk*>(user_ptr), 0, needed_size, nullptr, nullptr);
+    //::new (user_ptr) Chunk{0, needed_size, nullptr, nullptr};
 
     af_arena_.free_size_ -=  needed_size;
-    af_arena_.top_ = moveToTheNextPlaceInMem(af_arena_.top_, needed_size);
+    af_arena_.top_ = moveToTheNextPlaceInMem(user_chunk, needed_size);
 
     return moveToTheNextPlaceInMem(user_ptr, HEAD_OF_CHUNK_SIZE);
 }

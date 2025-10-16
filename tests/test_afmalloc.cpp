@@ -308,8 +308,6 @@ TEST_F(BasicAfMallocSizeAllocated, TestReusingRecentlyFreedChunk) {
     ASSERT_EQ(fourth_chunk->isPrevFree(), false);
     ASSERT_EQ(third_chunk->getSize(), 64);
 
-    // TODO bug is that we don't reset isPrevFree on allocated
-
     af_malloc.free(ptr);
     af_malloc.free(ptr2);
     af_malloc.free(ptr3);
