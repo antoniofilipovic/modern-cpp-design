@@ -1,6 +1,17 @@
 #pragma once
 #include <cstdint>
 #include <bit>
+#include <bitset>
+#include <vector>
+
+// original malloc implementation has fastBins from 32 to 160 bytes
+// fast bins are 16 bytes apart
+
+// small bin range is to 512 bytes ?
+//
+
+// when there is a large request it tries to consolidate first fast bins as it helps with fragmentation
+// fastchunks are not consolidated otherwise
 
 static_assert(std::endian::native == std::endian::little);
 
@@ -17,7 +28,9 @@ constexpr std::size_t ALIGNMENT = 2 * SIZE_OF_SIZE;
 constexpr std::size_t ALIGNMENT_MASK = ALIGNMENT - 1;
 static std::size_t HEAD_OF_CHUNK_SIZE = 16;
 
-
+/**
+ *
+ */
 class Chunk{
   public:
 
@@ -115,7 +128,16 @@ void* moveToThePreviousPlaceInMem(void *ptr, std::size_t size);
  */
 std::size_t getMallocNeededSize(std::size_t size);
 
-// 2.
+/**
+ * Basic struct with arena. It contains free_size_ of the top chunk,
+ * pointer to the top_ chunk, pointer to the begining of the memory block
+ * totally allocated size.
+ *
+ * Other structs include pointer to unsorted chunks, which in the first case when chunk is freed it is put
+ * to that list of the unsorted_chunks, which speeds up free, and gives them the chance to be reused quickly.
+ *
+ * For the unsorted_chunks_ I am doing LIFO, whereas malloc does FIFO
+ */
 struct AfArena{
 
   explicit AfArena() = default;
@@ -130,11 +152,32 @@ struct AfArena{
   // this is total allocated size
   std::size_t allocated_size_{0};
 
-  // this is leftover size
+  /**
+   * Tracks the number of free bytes left in the top chunk
+   */
   std::size_t free_size_{0};
 
-  // pointer to the linked list of free chunks
-  Chunk *free_chunks_{};
+  /**
+   * Contains the list of unsorted chunks. List is populated on the free, and then on the malloc
+   * we put the chunk in the corresponding list.
+   */
+  Chunk *unsorted_chunks_{};
+
+  /**
+   * Index list to help find if there are some free chunks there or not
+   */
+  std::vector<std::bitset<32>> bin_indexes_{};
+
+  /**
+   * Chunks which are not consolidated
+   */
+  Chunk *fast_chunks_{};
+
+  /**
+   *
+   */
+  Chunk *small_chunks_{};
+
 
 };
 
@@ -151,7 +194,13 @@ class AfMalloc{
     */
     void *malloc(std::size_t size);
 
-    void *memAlign(std::size_t alignment, std::size_t size);
+  /**
+   * Allocate with the user requested alignment, of at least size bytes
+   * @param alignment
+   * @param size
+   * @return
+   */
+  void *memAlign(std::size_t alignment, std::size_t size);
 
     /**
       *
@@ -179,8 +228,8 @@ class AfMalloc{
       *
       * @return
     */
-    Chunk *getFreeChunks() {
-      return af_arena_.free_chunks_;
+    Chunk *getUnsortedChunks() {
+      return af_arena_.unsorted_chunks_;
     }
 
     ~AfMalloc();

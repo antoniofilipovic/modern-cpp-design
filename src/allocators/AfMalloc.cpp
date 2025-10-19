@@ -52,7 +52,7 @@ void AfMalloc::extendTopChunk(){
 }
 
 void AfMalloc::removeFromFreeChunks(Chunk* chunk) {
-    Chunk *freeChunkLinkedList = af_arena_.free_chunks_;
+    Chunk *freeChunkLinkedList = af_arena_.unsorted_chunks_;
     if(freeChunkLinkedList == nullptr) {
         return;
     }
@@ -63,13 +63,13 @@ void AfMalloc::removeFromFreeChunks(Chunk* chunk) {
             break;
         }
         freeChunkLinkedList = freeChunkLinkedList->getNext();
-    }while(freeChunkLinkedList != nullptr && freeChunkLinkedList != af_arena_.free_chunks_);
+    }while(freeChunkLinkedList != nullptr && freeChunkLinkedList != af_arena_.unsorted_chunks_);
     assert(isIn);
     auto *nextChunk = chunk->getNext();
     auto *prevChunk = chunk->getPrev();
     // in case chunk points on itself
     if(nextChunk == prevChunk && nextChunk == chunk) {
-        af_arena_.free_chunks_ = nullptr;
+        af_arena_.unsorted_chunks_ = nullptr;
         return;
     }
 
@@ -77,8 +77,8 @@ void AfMalloc::removeFromFreeChunks(Chunk* chunk) {
     nextChunk->setPrev(prevChunk);
     prevChunk->setNext(nextChunk);
 
-    if(af_arena_.free_chunks_ == chunk) {
-        af_arena_.free_chunks_ = nextChunk;
+    if(af_arena_.unsorted_chunks_ == chunk) {
+        af_arena_.unsorted_chunks_ = nextChunk;
     }
 }
 
@@ -155,13 +155,13 @@ void AfMalloc::free(void *p) {
 
     // list of chunks how they became free in the list
     // last in first out
-    if(af_arena_.free_chunks_ == nullptr) {
-        af_arena_.free_chunks_ = free_chunk;
-        af_arena_.free_chunks_->setNext(free_chunk);
-        af_arena_.free_chunks_->setPrev(free_chunk);
+    if(af_arena_.unsorted_chunks_ == nullptr) {
+        af_arena_.unsorted_chunks_ = free_chunk;
+        af_arena_.unsorted_chunks_->setNext(free_chunk);
+        af_arena_.unsorted_chunks_->setPrev(free_chunk);
         return;
     }
-    Chunk *last_in_chunk = af_arena_.free_chunks_;
+    Chunk *last_in_chunk = af_arena_.unsorted_chunks_;
     Chunk *first_in_chunk = last_in_chunk->getPrev();
     free_chunk->setNext(last_in_chunk);
     free_chunk->setPrev(first_in_chunk);
@@ -169,11 +169,14 @@ void AfMalloc::free(void *p) {
     last_in_chunk->setPrev(free_chunk);
     first_in_chunk->setNext(free_chunk);
 
-    af_arena_.free_chunks_ = free_chunk;
+    af_arena_.unsorted_chunks_ = free_chunk;
 
 }
 
 AfMalloc::~AfMalloc() {
+    if(af_arena_.free_size_ != af_arena_.allocated_size_) {
+        std::cout << "leaking memory" << std::endl;
+    }
     munmap(af_arena_.begin_, af_arena_.allocated_size_);
 }
 
@@ -236,14 +239,14 @@ void *AfMalloc::malloc(std::size_t size) {
     std::size_t needed_size =  getMallocNeededSize(size);
 
     // if there are free chunks, try to use them
-    if(af_arena_.free_chunks_ != nullptr) {
+    if(af_arena_.unsorted_chunks_ != nullptr) {
         // Next to the free chunk there will always be allocated chunk
         // Hence prev_size of the allocated chunk can be used
         // deal with the case where we have free chunks
 
         // Free chunks are double linked list, so we can get
-        Chunk *start  = af_arena_.free_chunks_;
-        Chunk *free_chunk = af_arena_.free_chunks_;
+        Chunk *start  = af_arena_.unsorted_chunks_;
+        Chunk *free_chunk = af_arena_.unsorted_chunks_;
         Chunk *match{nullptr};
         while(true) {
             if(free_chunk->getSize()  >= needed_size) {
@@ -289,24 +292,14 @@ void *AfMalloc::malloc(std::size_t size) {
         af_arena_.free_size_ = MAX_HEAP_SIZE;
     }
 
-    // Here we can store anything which has alignment to 16 bytes. All the objects needed have number which is even
-    // for allocation reasons, hence we can be sure here that everything will properly work.
+    // We can store anything which has alignment of 16 bytes.
 
     // Here we will give to user the size needed
     // what we will do is we will return to user pointer after chunk's block
-
-    // We need to take care of alignment needed for chunk
-
-    // std::align moves m_top when we aligned it for the top
-    // TODO(afilipovic) enable std::construct
-    // we don't fill here prev and next as they are not used when chunk is in allocated state
-    // constructs chunk in place
-
     void *user_ptr = af_arena_.top_;
 
 
-    Chunk *user_chunk = std::construct_at(reinterpret_cast<Chunk*>(user_ptr), 0, needed_size, nullptr, nullptr);
-    //::new (user_ptr) Chunk{0, needed_size, nullptr, nullptr};
+    auto *user_chunk = std::construct_at(static_cast<Chunk*>(user_ptr), 0, needed_size, nullptr, nullptr);
 
     af_arena_.free_size_ -=  needed_size;
     af_arena_.top_ = moveToTheNextPlaceInMem(user_chunk, needed_size);

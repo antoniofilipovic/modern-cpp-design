@@ -130,7 +130,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3Chunks) {
 
 
     af_malloc.free(ptr);
-    auto *free_chunks = af_malloc.getFreeChunks();
+    auto *free_chunks = af_malloc.getUnsortedChunks();
     // does pointer equality
     ASSERT_EQ(free_chunks, first_chunk);
     ASSERT_EQ(first_chunk->getNext(), first_chunk);
@@ -149,7 +149,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3Chunks) {
     // second free
     af_malloc.free(second_ptr);
 
-    auto *free_chunks_ptr2 = af_malloc.getFreeChunks();
+    auto *free_chunks_ptr2 = af_malloc.getUnsortedChunks();
     ASSERT_EQ(free_chunks_ptr2, first_chunk);
     ASSERT_EQ(first_chunk->getSize(), 80); // 32 + 48
     ASSERT_EQ(first_chunk->getPrevSize(), 0);
@@ -168,7 +168,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3Chunks) {
 
     af_malloc.free(third_ptr);
 
-    Chunk *third_free_chunk = af_malloc.getFreeChunks();
+    Chunk *third_free_chunk = af_malloc.getUnsortedChunks();
     ASSERT_EQ(third_free_chunk, nullptr);
     ASSERT_EQ(third_chunk->getSize(), 0);
     ASSERT_EQ(third_chunk->isPrevFree(), false);
@@ -221,7 +221,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3ChunksLIFO) {
 
     // Now we should see that we merge them again
     af_malloc.free(third_ptr);
-    Chunk *free_chunk_linked_list = af_malloc.getFreeChunks();
+    Chunk *free_chunk_linked_list = af_malloc.getUnsortedChunks();
     ASSERT_EQ(free_chunk_linked_list, nullptr);
     ASSERT_EQ(third_chunk, af_malloc.getTop());
     ASSERT_EQ(third_chunk->getSize(), 0);
@@ -231,7 +231,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3ChunksLIFO) {
 
 
     af_malloc.free(second_ptr);
-    free_chunk_linked_list = af_malloc.getFreeChunks();
+    free_chunk_linked_list = af_malloc.getUnsortedChunks();
 
     ASSERT_EQ(nullptr, free_chunk_linked_list);
     ASSERT_EQ(second_chunk, af_malloc.getTop());
@@ -243,7 +243,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3ChunksLIFO) {
 
     af_malloc.free(ptr);
 
-    free_chunk_linked_list = af_malloc.getFreeChunks();
+    free_chunk_linked_list = af_malloc.getUnsortedChunks();
     ASSERT_EQ(free_chunk_linked_list, nullptr);
     ASSERT_EQ(first_chunk, af_malloc.getTop());
     ASSERT_EQ(first_chunk->getSize(), 0);
@@ -294,14 +294,14 @@ TEST_F(BasicAfMallocSizeAllocated, TestReusingRecentlyFreedChunk) {
     ASSERT_EQ(fourth_chunk->isPrevFree(), true);
     ASSERT_EQ(third_chunk->getSize(), 64);
 
-    ASSERT_EQ(af_malloc.getFreeChunks(), first_chunk);
+    ASSERT_EQ(af_malloc.getUnsortedChunks(), first_chunk);
 
     void *ptr5 = af_malloc.malloc(10);
     ASSERT_EQ(ptr5, ptr);
     void *ptr6 = af_malloc.malloc(44);
     ASSERT_EQ(ptr6, ptr3);
 
-    ASSERT_EQ(af_malloc.getFreeChunks(), nullptr);
+    ASSERT_EQ(af_malloc.getUnsortedChunks(), nullptr);
 
     ASSERT_EQ(first_chunk->getSize(), 48);
     ASSERT_EQ(second_chunk->isPrevFree(), false);
