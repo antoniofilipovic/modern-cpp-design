@@ -278,5 +278,17 @@ class AfMalloc{
 
       std::optional<void*> findChunkFromUnsortedFreeChunks(std::size_t needed_size);
 
+      bool isInFastBinRange(std::size_t size);
+
+      bool isInSmallBinRange(std::size_t size);
+
+      bool hasLargeChunkFree();
+
+      Chunk *tryFindFastBinChunk(std::size_t size);
+
+      Chunk *tryFindSmallBinChunk(std::size_t size);
+
+      Chunk *tryFindLargeChunk(std::size_t size);
+
       AfArena af_arena_{};
 };

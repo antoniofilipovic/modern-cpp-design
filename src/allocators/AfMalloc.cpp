@@ -133,7 +133,12 @@ void AfMalloc::extendTopChunk(){
     prev_chunk->setSize(0);
 }
 
-void AfMalloc::removeFromFreeChunks(Chunk* chunk) {
+void AfMalloc::removeFromFastChunks(Chunk* chunk) {
+
+}
+
+void AfMalloc::removeFromFreeChunks(Chunk* chunk, Chunk *freeChunkLinkedList ) {
+
     Chunk *freeChunkLinkedList = af_arena_.unsorted_chunks_;
     if(freeChunkLinkedList == nullptr) {
         return;
@@ -325,6 +330,60 @@ std::optional<void*> AfMalloc::findChunkFromUnsortedFreeChunks(std::size_t neede
     return moveToTheNextPlaceInMem(match, HEAD_OF_CHUNK_SIZE);
 }
 
+std::size_t getMaxFastBinBitIndex() {
+    return FAST_BIN_RANGE_END / BIN_SPACING_SIZE;
+}
+
+bool AfMalloc::isInFastBinRange(std::size_t size) {
+    return size <= FAST_BIN_RANGE_END;
+}
+
+bool AfMalloc::isInSmallBinRange(std::size_t size) {
+    return size <= SMALL_BIN_RANGE_END;
+}
+
+bool AfMalloc::hasLargeChunkFree() {
+    return af_arena_.unsorted_large_chunks != nullptr;
+}
+
+/**
+ * Fast bin chunk gets allocated, we remove it from the list
+ * Later we add it to the unsorted chunks, and insert back into the free list
+ * It is never coalesced however.
+ * @param size
+ * @return
+ */
+Chunk *AfMalloc::tryFindFastBinChunk(std::size_t size) {
+    auto [start_index, bit_index] = *findBinIndex(size);
+    assert(start_index == FASTBINS_INDEX);
+    auto index = start_index;
+
+    Chunk *free_list_chunks = af_arena_.fast_chunks_[start_index];
+    while(true) {
+        if(free_list_chunks == nullptr) {
+            index++;
+        }else {
+            removeFromFreeChunks();
+        }
+
+        // Not sure how malloc does this, but probably good idea to restrict this to one above
+        // if there is no exact match, otherwise we are wasting a lot of memory space
+        if(index > getMaxFastBinBitIndex() || index - start_index >= 2 ) {
+            return nullptr;
+        }
+    }
+}
+
+Chunk *AfMalloc::tryFindSmallBinChunk(std::size_t size) {
+
+}
+
+Chunk *AfMalloc::tryFindLargeChunk(std::size_t size) {
+
+}
+
+
+
 void *AfMalloc::malloc(std::size_t size) {
 
     std::size_t needed_size =  getMallocNeededSize(size);
@@ -335,14 +394,23 @@ void *AfMalloc::malloc(std::size_t size) {
             return *maybe_chunk;
         }
     }
-    if(isInFastBinRange()) {
-
+    if(isInFastBinRange(needed_size)) {
+        auto *chunk = tryFindFastBinChunk(needed_size);
+        if(chunk) {
+            return chunk;
+        }
     }
-    if(isInSmallBinRange()) {
-
+    if(isInSmallBinRange(needed_size)) {
+        auto *chunk =tryFindSmallBinChunk(needed_size);
+        if(chunk) {
+            return chunk;
+        }
     }
-    if(largeChunksAreFree()) {
-
+    if(hasLargeChunkFree()) {
+        auto *chunk = tryFindLargeChunk(needed_size);
+        if(chunk) {
+            return chunk;
+        }
     }
 
     // if there are no free chunks, and we have no enough size, we need to allocate a new block
@@ -378,6 +446,10 @@ void *AfMalloc::malloc(std::size_t size) {
 
     af_arena_.free_size_ -=  needed_size;
     af_arena_.top_ = moveToTheNextPlaceInMem(user_chunk, needed_size);
+
+    if(isInFastBinRange()) {
+        markChunkAsUsed();
+    }
 
     return moveToTheNextPlaceInMem(user_ptr, HEAD_OF_CHUNK_SIZE);
 }
