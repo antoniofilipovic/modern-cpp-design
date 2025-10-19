@@ -4,6 +4,7 @@
 #include <cassert>
 #include <memory>
 #include <cstring>
+#include <optional>
 
 #include "AfMalloc.hpp"
 
@@ -32,6 +33,70 @@ void* moveToThePreviousPlaceInMem(void *ptr, std::size_t size) {
     return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ptr) - size);
 }
 
+std::size_t get_alignment_size(void* ptr, std::size_t alignment) {
+    const auto int_ptr = reinterpret_cast<uintptr_t>(ptr);
+    const auto aligned_ptr_int = (int_ptr + (alignment - 1u)) & -alignment;
+    return  aligned_ptr_int - int_ptr;
+    /// -alignment what is does is it creates a number which is  000010000  ->  111011111 + 1 -> 11100000  111111010000
+    /// if ptr is aligned on something other than 16, when you add 15 it will move it to the next alignment slot
+}
+
+
+std::size_t get_needed_size_with_alignment(void *ptr, std::size_t alignment, std::size_t size) {
+    const auto int_ptr = reinterpret_cast<uintptr_t>(ptr);
+    const auto aligned_needed_ptr_int = (int_ptr +  size + (alignment - 1u)) & -alignment;
+    return  aligned_needed_ptr_int - int_ptr;
+}
+std::size_t getMallocNeededSize(std::size_t size) {
+    if (size + SIZE_OF_SIZE <= CHUNK_SIZE) {
+        return CHUNK_SIZE;
+    }
+    // The reason behind this formula is that we need to satisfy user's request for `size` bytes
+    // and we need 8 bytes to store the size (look at the chunk and check that it requires to store user's size)
+    // Other fields are not used when chunk is allocated. So when our chunk is allocated the next chunk does not
+    // use prev_size field and we don't use the fields for m_prev and m_next
+    //
+
+    // Anatomy of the chunk in this case
+    // ----|+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    // ----| a) Size of previous chunk   |
+    // allocated chunk starts here-->+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    // ----| b) Current size            |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    //     | c) Ptr to next chunk              |
+    //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    //     | d1) Ptr to previous chunk          |
+    //     | d2) rest of the user data |
+    // next_chunk starts -> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    ///   | e) Previous size |
+    ///   all again
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
+    // Now, to satisfy user request of the `size` bytes we have following space at use:
+    //      c) + d) + e) (e from the next chunk)
+    // c) and d1) are used as user space when chunk is allocated
+    // e) which is memory from the next chunk is also used as a free space for our chunk
+    // in other words: c) + d) + e) must be bigger or equal to the `size`
+    // ( (c + d + e) + b) is actually one chunk, but which starts at the current_size , instead of prev_size_
+    // ((size) +  (b)) -> size + SIZE_OF_SIZE
+    // In that formula we add also ALIGNMENT_MASK
+
+    return (size + SIZE_OF_SIZE + ALIGNMENT_MASK) & ~ALIGNMENT_MASK;
+}
+
+
+std::optional<std::pair<std::size_t, std::size_t>> findBinIndex(const std::size_t allocations_size) {
+    // 1. All our allocations are divisible with size of 16
+    // 2. Our bins are made so that spacing between those bins is 16 bytes
+    //
+    assert(allocations_size % ALIGNMENT == 0);
+
+    if(allocations_size < FAST_BIN_RANGE_END) {
+        return std::make_pair(FASTBINS_INDEX, allocations_size / BIN_SPACING_SIZE);
+    }if(allocations_size < SMALL_BIN_RANGE_END) {
+        return std::make_pair(SMALLBINS_INDEX, (allocations_size - FAST_BIN_RANGE_END) / BIN_SPACING_SIZE);
+    }
+    return std::nullopt;
+}
 
 
 void clearUpDataSpaceOfChunk(Chunk *chunk) {
@@ -39,6 +104,23 @@ void clearUpDataSpaceOfChunk(Chunk *chunk) {
     memset(data_start, 0, chunk->getSize() - HEAD_OF_CHUNK_SIZE);
 }
 
+
+AfArena::AfArena() : bin_indexes_(2) {
+    // TODO eat own dog food for bin indexes?
+}
+
+
+void AfMalloc::moveToUnsortedLargeChunks(Chunk *free_chunk) {
+
+}
+
+void AfMalloc::moveToFastBinsChunks(Chunk *free_chunk, std::size_t bit_index) {
+
+}
+
+void AfMalloc::moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index) {
+
+}
 
 void AfMalloc::extendTopChunk(){
     auto *top_chunk = static_cast<Chunk *>(getTop());
@@ -180,94 +262,87 @@ AfMalloc::~AfMalloc() {
     munmap(af_arena_.begin_, af_arena_.allocated_size_);
 }
 
-void do_allocation() {
+std::optional<void*> AfMalloc::findChunkFromUnsortedFreeChunks(std::size_t needed_size) {
+    // Next to the free chunk, unless it is in the fast bin range, there will always be an allocated chunk,
+    // since otherwise we would coalesce them
+    // on the free.
 
-}
+    // Unsorted free chunks are stored in a double linked list
+    Chunk *start  = af_arena_.unsorted_chunks_;
+    Chunk *free_chunk_iter = af_arena_.unsorted_chunks_;
+    Chunk *match{nullptr};
+    while(true) {
+        // We are looking for the first chunk that we can find.
+        // For others we will go through the list of the free chunks, and store them in the appropriate bin
+        if(free_chunk_iter->getSize()  >= needed_size) {
+            match = free_chunk_iter;
+            break;
+        }else {
+            auto maybe_bin_index = findBinIndex(needed_size);
+            // free_chunk_list -> 1 -> 2 - > 3
+            auto *free_chunk_iter_prev = free_chunk_iter->getPrev();
+            // We need to first unlink the chunk from the current place
+            removeFromFreeChunks(free_chunk_iter);
+            if(!maybe_bin_index) {
+                moveToUnsortedLargeChunks(free_chunk_iter);
+            }else {
+                auto [index, bit_index] = *maybe_bin_index;
+                if(index == FASTBINS_INDEX) {
+                    // fast range
+                    moveToFastBinsChunks(free_chunk_iter, bit_index);
+                }else {
+                    // small range
+                    moveToSmallBinsChunks(free_chunk_iter, bit_index);
+                }
+            }
 
-std::size_t get_alignment_size(void* ptr, std::size_t alignment) {
-    const auto int_ptr = reinterpret_cast<uintptr_t>(ptr);
-    const auto aligned_ptr_int = (int_ptr + (alignment - 1u)) & -alignment;
-    return  aligned_ptr_int - int_ptr;
-    /// -alignment what is does is it creates a number which is  000010000  ->  111011111 + 1 -> 11100000  111111010000
-    /// if ptr is aligned on something other than 16, when you add 15 it will move it to the next alignment slot
-}
+            // if we were the last chunk here
+            if(free_chunk_iter_prev == free_chunk_iter) {
+                break;
+            }
+        }
 
+        free_chunk_iter = free_chunk_iter->getNext();
 
-std::size_t get_needed_size_with_alignment(void *ptr, std::size_t alignment, std::size_t size) {
-    const auto int_ptr = reinterpret_cast<uintptr_t>(ptr);
-    const auto aligned_needed_ptr_int = (int_ptr +  size + (alignment - 1u)) & -alignment;
-    return  aligned_needed_ptr_int - int_ptr;
-}
-std::size_t getMallocNeededSize(std::size_t size) {
-    if (size + SIZE_OF_SIZE <= CHUNK_SIZE) {
-        return CHUNK_SIZE;
+        if(free_chunk_iter == start) {
+            break;
+        }
     }
-    // The reason behind this formula is that we need to satisfy user's request for `size` bytes
-    // and we need 8 bytes to store the size (look at the chunk and check that it requires to store user's size)
-    // Other fields are not used when chunk is allocated. So when our chunk is allocated the next chunk does not
-    // use prev_size field and we don't use the fields for m_prev and m_next
-    //
 
-    // Anatomy of the chunk in this case
-    // ----|+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
-    // ----| a) Size of previous chunk   |
-    // allocated chunk starts here-->+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
-    // ----| b) Current size            |
-    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
-    //     | c) Ptr to next chunk              |
-    //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
-    //     | d1) Ptr to previous chunk          |
-    //     | d2) rest of the user data |
-    // next_chunk starts -> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
-    ///   | e) Previous size |
-    ///   all again
-    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
-    // Now, to satisfy user request of the `size` bytes we have following space at use:
-    //      c) + d) + e) (e from the next chunk)
-    // c) and d1) are used as user space when chunk is allocated
-    // e) which is memory from the next chunk is also used as a free space for our chunk
-    // in other words: c) + d) + e) must be bigger or equal to the `size`
-    // ( (c + d + e) + b) is actually one chunk, but which starts at the current_size , instead of prev_size_
-    // ((size) +  (b)) -> size + SIZE_OF_SIZE
-    // In that formula we add also ALIGNMENT_MASK
+    if(match == nullptr) {
+        return std::nullopt;
+    }
+    removeFromFreeChunks(match);
+    // TODO this is opportunity to split the chunk on the multiple chunks, since we could otherwise get really
+    // big chunk
+    Chunk* next_chunk = moveToTheNextChunk(match, match->getSize());
+    // next chunk only knows that we are free
+    next_chunk->unsetPrevFree();
+    // this will be used by our chunk also, so we need to zero the memory
+    next_chunk->setPrevSize(0);
 
-    return (size + SIZE_OF_SIZE + ALIGNMENT_MASK) & ~ALIGNMENT_MASK;
-
+    // We don't need to call the construct here since we have already done so
+    return moveToTheNextPlaceInMem(match, HEAD_OF_CHUNK_SIZE);
 }
+
 void *AfMalloc::malloc(std::size_t size) {
 
     std::size_t needed_size =  getMallocNeededSize(size);
 
     // if there are free chunks, try to use them
     if(af_arena_.unsorted_chunks_ != nullptr) {
-        // Next to the free chunk there will always be allocated chunk
-        // Hence prev_size of the allocated chunk can be used
-        // deal with the case where we have free chunks
-
-        // Free chunks are double linked list, so we can get
-        Chunk *start  = af_arena_.unsorted_chunks_;
-        Chunk *free_chunk = af_arena_.unsorted_chunks_;
-        Chunk *match{nullptr};
-        while(true) {
-            if(free_chunk->getSize()  >= needed_size) {
-                match = free_chunk;
-                break;
-            }
-            free_chunk = free_chunk->getNext();
-
-            if(free_chunk == start) {
-                break;
-            }
+        if(auto maybe_chunk = findChunkFromUnsortedFreeChunks(needed_size)) {
+            return *maybe_chunk;
         }
+    }
+    if(isInFastBinRange()) {
 
-        removeFromFreeChunks(match);
-        Chunk* next_chunk = moveToTheNextChunk(match, match->getSize());
-        // next chunk only knows that we are free
-        next_chunk->unsetPrevFree();
-        // this will be used by our chunk also, so we need to zero the memory
-        next_chunk->setPrevSize(0);
-        // do we need to call construct at here?
-        return moveToTheNextPlaceInMem(match, HEAD_OF_CHUNK_SIZE);
+    }
+    if(isInSmallBinRange()) {
+
+    }
+    if(largeChunksAreFree()) {
+
     }
 
     // if there are no free chunks, and we have no enough size, we need to allocate a new block

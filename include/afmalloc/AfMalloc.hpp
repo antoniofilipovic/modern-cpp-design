@@ -14,19 +14,38 @@
 // fastchunks are not consolidated otherwise
 
 static_assert(std::endian::native == std::endian::little);
+// Change with log level
+constexpr bool TRACKING{false};
 
-static_assert(sizeof(std::size_t) == 8);
 
+constexpr std::size_t SIZE_OF_SIZE = sizeof(std::size_t);
+static_assert(SIZE_OF_SIZE == 8);
+
+// How we mark that previous is inuse
+// 63 may come out of random, but it is sizeof(std::size_t) * CHAR_NUM_BITS - 1
 static std::size_t PREV_FREE = 1ul << 63;
 
 // 32 pages, or 128kB
 constexpr std::size_t MAX_HEAP_SIZE = 32*4096;
-constexpr bool TRACKING{false};
-constexpr std::size_t SIZE_OF_SIZE = sizeof(std::size_t);
-static_assert(SIZE_OF_SIZE == 8);
+
 constexpr std::size_t ALIGNMENT = 2 * SIZE_OF_SIZE;
 constexpr std::size_t ALIGNMENT_MASK = ALIGNMENT - 1;
+
+
 static std::size_t HEAD_OF_CHUNK_SIZE = 16;
+
+constexpr std::size_t FAST_BIN_RANGE_START = 16;
+constexpr std::size_t FAST_BIN_RANGE_END = 160;
+
+constexpr std::size_t SMALL_BIN_RANGE_END = 512;
+
+constexpr std::size_t BIN_SPACING_SIZE = 16;
+constexpr std::size_t BITMAP_SIZE = 32;
+constexpr std::size_t FASTBINS_INDEX = 0;
+constexpr std::size_t SMALLBINS_INDEX = 1;
+
+
+static_assert((SMALL_BIN_RANGE_END - FAST_BIN_RANGE_END) / BIN_SPACING_SIZE <= BITMAP_SIZE);
 
 /**
  *
@@ -136,11 +155,13 @@ std::size_t getMallocNeededSize(std::size_t size);
  * Other structs include pointer to unsorted chunks, which in the first case when chunk is freed it is put
  * to that list of the unsorted_chunks, which speeds up free, and gives them the chance to be reused quickly.
  *
- * For the unsorted_chunks_ I am doing LIFO, whereas malloc does FIFO
+ * For the unsorted_chunks_ I am doing LIFO, whereas malloc does FIFO.
+ * FIFO should give the equal opportunity to each chunk to be reused, and then consolidated, thus reducing
+ * fragmentation. LIFO is done only since I don't care here about fragmentation and such long lived programs.
  */
 struct AfArena{
 
-  explicit AfArena() = default;
+  explicit AfArena();
 
   // begin of arena
   void *begin_{nullptr};
@@ -159,7 +180,8 @@ struct AfArena{
 
   /**
    * Contains the list of unsorted chunks. List is populated on the free, and then on the malloc
-   * we put the chunk in the corresponding list.
+   * we put the chunk in the corresponding bin. We traverse this double linked list in LIFO order, which is
+   * different from what malloc does (FIFO).
    */
   Chunk *unsorted_chunks_{};
 
@@ -169,14 +191,19 @@ struct AfArena{
   std::vector<std::bitset<32>> bin_indexes_{};
 
   /**
-   * Chunks which are not consolidated
+   * Pointer to the beginning of every of the fast chunks
    */
-  Chunk *fast_chunks_{};
+  std::vector<Chunk *>fast_chunks_{};
 
   /**
-   *
+   * Pointer to the beginning of the every of the small chunks
    */
-  Chunk *small_chunks_{};
+  std::vector<Chunk *>small_chunks_{nullptr};
+
+  /**
+   * Large chunks which are unsorted
+   */
+  Chunk *unsorted_large_chunks{nullptr};
 
 
 };
@@ -242,5 +269,14 @@ class AfMalloc{
   private:
       // removes this chunk from the list of free chunks
       void removeFromFreeChunks(Chunk* chunk);
+
+      void moveToUnsortedLargeChunks(Chunk *free_chunk);
+
+      void moveToFastBinsChunks(Chunk *free_chunk, std::size_t bit_index);
+
+      void moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index);
+
+      std::optional<void*> findChunkFromUnsortedFreeChunks(std::size_t needed_size);
+
       AfArena af_arena_{};
 };

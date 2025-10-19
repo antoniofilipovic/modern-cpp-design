@@ -314,14 +314,26 @@ TEST_F(BasicAfMallocSizeAllocated, TestReusingRecentlyFreedChunk) {
     af_malloc.free(ptr4);
 }
 
+TEST_F(BasicAfMallocSizeAllocated, TestMoveFromFreeChunks) {
+
+}
+
+TEST_F(BasicAfMallocSizeAllocated, TestMoveFromFreeChunks) {
+
+}
+
 TEST_F(BasicAfMallocSizeAllocated, DoubleFree) {
+    // This should be possible to detect?
+}
+
+// how to synchronize multiple threads allocating at the same time?
+TEST_F(BasicAfMallocSizeAllocated, MultipleThreadsAllocating) {
 
 }
 
 // test for unaligned access
 // create a simple struct which needs to be aligned on 128 bytes
 
+TEST_F(BasicAfMallocSizeAllocated, MemAlignTestCase) {
 
-
-/// Try to allocate size of 24 bytes and write there
-/// The thing is we should move the top before
+}
