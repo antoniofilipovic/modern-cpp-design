@@ -47,6 +47,7 @@ constexpr std::size_t SMALLBINS_INDEX = 1;
 
 static_assert((SMALL_BIN_RANGE_END - FAST_BIN_RANGE_END) / BIN_SPACING_SIZE <= BITMAP_SIZE);
 
+
 /**
  *
  */
@@ -193,7 +194,7 @@ struct AfArena{
   /**
    * Pointer to the beginning of every of the fast chunks
    */
-  std::vector<Chunk *>fast_chunks_{};
+  std::vector<Chunk *> fast_chunks_{};
 
   /**
    * Pointer to the beginning of the every of the small chunks
@@ -207,6 +208,45 @@ struct AfArena{
 
 
 };
+
+// Strong type for Chunk*
+struct ListHead {
+  //explicit ListHead(Chunk *list_head) : list_head_(list_head) {}
+  Chunk* list_head_;
+};
+
+struct ListHeadRef {
+  //explicit ListHead(Chunk *list_head) : list_head_(list_head) {}
+  std::reference_wrapper<Chunk*> list_head_;
+};
+
+
+std::optional<void*> findChunkFromUnsortedFreeChunks(ListHead unsorted_chunks, std::size_t needed_size);
+
+ListHead  removeFromFreeChunks(ListHead list_head, Chunk* chunk);
+void  removeFromFreeChunks(ListHeadRef list_head, Chunk* chunk);
+
+void  unlinkChunk(Chunk* chunk);
+
+bool isInFastBinRange(std::size_t size);
+
+bool isInSmallBinRange(std::size_t size);
+
+bool hasLargeChunkFree();
+
+Chunk *tryFindFastBinChunk(const std::vector<Chunk *> &fast_chunks, std::size_t size);
+
+Chunk *tryFindSmallBinChunk(const std::vector<Chunk *> &small_chunks, std::size_t size);
+
+Chunk *tryFindLargeChunk(Chunk *large_chunks, std::size_t size);
+
+
+void moveToUnsortedLargeChunks(Chunk *free_chunk);
+
+void moveToFastBinsChunks(Chunk *free_chunk, std::size_t bit_index);
+
+void moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index);
+
 
 class AfMalloc{
 
@@ -268,27 +308,14 @@ class AfMalloc{
 
   private:
       // removes this chunk from the list of free chunks
-      void removeFromFreeChunks(Chunk* chunk);
 
-      void moveToUnsortedLargeChunks(Chunk *free_chunk);
 
-      void moveToFastBinsChunks(Chunk *free_chunk, std::size_t bit_index);
 
-      void moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index);
 
-      std::optional<void*> findChunkFromUnsortedFreeChunks(std::size_t needed_size);
 
-      bool isInFastBinRange(std::size_t size);
 
-      bool isInSmallBinRange(std::size_t size);
-
-      bool hasLargeChunkFree();
-
-      Chunk *tryFindFastBinChunk(std::size_t size);
-
-      Chunk *tryFindSmallBinChunk(std::size_t size);
-
-      Chunk *tryFindLargeChunk(std::size_t size);
 
       AfArena af_arena_{};
 };
+
+
