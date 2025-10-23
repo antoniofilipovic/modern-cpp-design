@@ -36,6 +36,7 @@ static std::size_t HEAD_OF_CHUNK_SIZE = 16;
 
 constexpr std::size_t FAST_BIN_RANGE_START = 16;
 constexpr std::size_t FAST_BIN_RANGE_END = 160;
+constexpr std::size_t NUM_FAST_CHUNKS = FAST_BIN_RANGE_END / FAST_BIN_RANGE_START;
 
 constexpr std::size_t SMALL_BIN_RANGE_END = 512;
 
@@ -91,6 +92,16 @@ class Chunk{
     [[nodiscard]] Chunk* getNext() {
       return next_;
     }
+
+    [[nodiscard]] const Chunk * getPrev()  const {
+      return prev_;
+    }
+
+    [[nodiscard]] const Chunk* getNext() const {
+      return next_;
+    }
+
+
 
     void setPrev(Chunk *prev) {
       prev_ = prev;
@@ -184,7 +195,7 @@ struct AfArena{
    * we put the chunk in the corresponding bin. We traverse this double linked list in LIFO order, which is
    * different from what malloc does (FIFO).
    */
-  Chunk *unsorted_chunks_{};
+  Chunk unsorted_chunks_{0, 0, nullptr, nullptr};
 
   /**
    * Index list to help find if there are some free chunks there or not
@@ -194,17 +205,17 @@ struct AfArena{
   /**
    * Pointer to the beginning of every of the fast chunks
    */
-  std::vector<Chunk *> fast_chunks_{};
+  std::vector<Chunk> fast_chunks_{};
 
   /**
    * Pointer to the beginning of the every of the small chunks
    */
-  std::vector<Chunk *>small_chunks_{nullptr};
+  std::vector<Chunk> small_chunks_{};
 
   /**
    * Large chunks which are unsorted
    */
-  Chunk *unsorted_large_chunks{nullptr};
+  Chunk unsorted_large_chunks_{0, 0, nullptr, nullptr};
 
 
 };
@@ -212,7 +223,7 @@ struct AfArena{
 // Strong type for Chunk*
 struct ListHead {
   //explicit ListHead(Chunk *list_head) : list_head_(list_head) {}
-  Chunk* list_head_;
+  Chunk *list_head_;
 };
 
 struct ListHeadRef {
@@ -221,7 +232,7 @@ struct ListHeadRef {
 };
 
 
-std::optional<void*> findChunkFromUnsortedFreeChunks(ListHead unsorted_chunks, std::size_t needed_size);
+
 
 ListHead  removeFromFreeChunks(ListHead list_head, Chunk* chunk);
 void  removeFromFreeChunks(ListHeadRef list_head, Chunk* chunk);
@@ -241,18 +252,14 @@ Chunk *tryFindSmallBinChunk(const std::vector<Chunk *> &small_chunks, std::size_
 Chunk *tryFindLargeChunk(Chunk *large_chunks, std::size_t size);
 
 
-void moveToUnsortedLargeChunks(Chunk *free_chunk);
 
-void moveToFastBinsChunks(Chunk *free_chunk, std::size_t bit_index);
-
-void moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index);
 
 
 class AfMalloc{
 
   // struct which holds arena
   public:
-    explicit AfMalloc() = default;
+    explicit AfMalloc();
 
     /**
      * Main malloc function used for satisfying user requests
@@ -307,6 +314,17 @@ class AfMalloc{
     void extendTopChunk();
 
   private:
+      void init();
+
+      std::optional<void*> findChunkFromUnsortedFreeChunks(std::size_t size);
+
+      void moveChunkToCorrectBin(Chunk *current_chunk, std::size_t size);
+
+      void moveToUnsortedLargeChunks(Chunk *free_chunk);
+
+      void moveToFastBinsChunks(Chunk *free_chunk, std::size_t bit_index);
+
+      void moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index);
       // removes this chunk from the list of free chunks
 
 

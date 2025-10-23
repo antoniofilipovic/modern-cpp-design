@@ -8,6 +8,7 @@
 
 #include "AfMalloc.hpp"
 
+#include <bits/ranges_algo.h>
 #include <sys/mman.h>
 
 #define MMAP(addr, size, prot, flags) \
@@ -110,15 +111,23 @@ AfArena::AfArena() : bin_indexes_(2) {
 }
 
 
-void moveToUnsortedLargeChunks(Chunk *free_chunk) {
+void AfMalloc::moveToUnsortedLargeChunks(Chunk *free_chunk) {
+    Chunk *next_chunk = af_arena_.unsorted_large_chunks_.getNext();
+
+    free_chunk->setNext(next_chunk);
+    next_chunk->setPrev(free_chunk);
+
+
+    free_chunk->setPrev(&af_arena_.unsorted_large_chunks_);
+    af_arena_.unsorted_large_chunks_.setNext(free_chunk);
+    
+}
+
+void AfMalloc::moveToFastBinsChunks(Chunk *free_chunk, std::size_t bit_index) {
 
 }
 
-void moveToFastBinsChunks(Chunk *free_chunk, std::size_t bit_index) {
-
-}
-
-void moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index) {
+void AfMalloc::moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index) {
 
 }
 
@@ -203,6 +212,28 @@ void unlinkChunk(ListHeadRef list_head_ref, Chunk* chunk) {
         list_head_ref.list_head_.get() = nextChunk;
     }
 }
+
+AfMalloc::AfMalloc() {
+    init();
+}
+
+void AfMalloc::init() {
+    // TODO this should be implemented that we allocate memory with our own allocator and size
+    af_arena_.fast_chunks_.resize(NUM_FAST_CHUNKS, {0, 0, nullptr, nullptr});
+    std::ranges::for_each(af_arena_.fast_chunks_, [](auto &chunk) {
+        chunk.getNext() = &chunk;
+        chunk.getPrev() = &chunk;
+    });
+
+    af_arena_.small_chunks_.resize(NUM_FAST_CHUNKS, {0, 0, nullptr, nullptr});
+    std::ranges::for_each(af_arena_.small_chunks_, [](auto &chunk) {
+        chunk.getNext() = &chunk;
+        chunk.getPrev() = &chunk;
+    });
+
+    af_arena_.unsorted_large_chunks_ = {0, 0, nullptr, nullptr};
+}
+
 
 // Once deallocation is done, we write to the next chunk that prev_size is our size current, and we write to
 // ourselves that we are not in use
@@ -311,12 +342,10 @@ AfMalloc::~AfMalloc() {
     munmap(af_arena_.begin_, af_arena_.allocated_size_);
 }
 
-void moveChunkToCorrectBin(ListHead list_head_ref, Chunk *current_chunk, std::size_t needed_size) {
+void AfMalloc::moveChunkToCorrectBin(Chunk *current_chunk, std::size_t needed_size) {
     auto maybe_bin_index = findBinIndex(needed_size);
     // free_chunk_list -> 1 -> 2 - > 3
-    auto *prev_chunk = current_chunk->getPrev();
-    // We need to first unlink the chunk from the current place
-    list_head_ref = removeFromFreeChunks(list_head_ref, current_chunk);
+    unlinkChunk(current_chunk);
     if(!maybe_bin_index) {
         moveToUnsortedLargeChunks(current_chunk);
     }else {
@@ -332,13 +361,14 @@ void moveChunkToCorrectBin(ListHead list_head_ref, Chunk *current_chunk, std::si
 
 }
 
-std::optional<void*> findChunkFromUnsortedFreeChunks(ListHead unsorted_chunks, std::size_t needed_size) {
+std::optional<void*> AfMalloc::findChunkFromUnsortedFreeChunks(std::size_t needed_size) {
     // Next to the free chunk, unless it is in the fast bin range, there will always be an allocated chunk,
     // since otherwise we would coalesce them
     // on the free.
+    // For the fast bin chunk, even if the chunk next to the fast bin chunk is free, we would not coalesce them.
 
     // Unsorted free chunks are stored in a double linked list
-    Chunk *start  = unsorted_chunks.list_head_;
+    Chunk *start  = &af_arena_.unsorted_chunks_;
     Chunk *free_chunk_iter = start;
     Chunk *match{nullptr};
     while(true) {
@@ -349,7 +379,7 @@ std::optional<void*> findChunkFromUnsortedFreeChunks(ListHead unsorted_chunks, s
             break;
         }
         Chunk *prev = free_chunk_iter->getPrev();
-        moveChunkToCorrectBin(unsorted_chunks, free_chunk_iter, needed_size);
+        moveChunkToCorrectBin(free_chunk_iter, needed_size);
 
         // if we were the last chunk here
         if(prev == free_chunk_iter) {
@@ -367,7 +397,8 @@ std::optional<void*> findChunkFromUnsortedFreeChunks(ListHead unsorted_chunks, s
         return std::nullopt;
     }
 
-    removeFromFreeChunks(unsorted_chunks, match);
+    unlinkChunk(match);
+
     // TODO this is opportunity to split the chunk on the multiple chunks, since we could otherwise get really
     // big chunk
     Chunk* next_chunk = moveToTheNextChunk(match, match->getSize());
@@ -434,6 +465,13 @@ Chunk *tryFindLargeChunk(Chunk *large_chunks, std::size_t size) {
     assert(false);
 }
 
+bool isPointingToSelf(const Chunk &list_head) {
+    return list_head.getPrev() == list_head.getNext();
+}
+
+bool hasElementsInList(const Chunk &list_head) {
+    return !isPointingToSelf(list_head);
+}
 
 
 void *AfMalloc::malloc(std::size_t size) {
@@ -441,8 +479,8 @@ void *AfMalloc::malloc(std::size_t size) {
     std::size_t needed_size =  getMallocNeededSize(size);
 
     // if there are free chunks, try to use them
-    if(af_arena_.unsorted_chunks_ != nullptr) {
-        if(auto maybe_chunk = findChunkFromUnsortedFreeChunks(ListHead{af_arena_.unsorted_chunks_}, needed_size)) {
+    if(hasElementsInList(af_arena_.unsorted_chunks_)) {
+        if(auto maybe_chunk = findChunkFromUnsortedFreeChunks(ListHead{&af_arena_.unsorted_chunks_}, needed_size)) {
             return *maybe_chunk;
         }
     }
