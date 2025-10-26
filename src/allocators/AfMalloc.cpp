@@ -142,27 +142,6 @@ void AfMalloc::extendTopChunk(){
     prev_chunk->setSize(0);
 }
 
-
-
-/**
- *
- * @param chunk Chunk we want to remove
- * @param list_head_ref reference to object holding pointer to the beginning of the list
- * @return new head
- */
-Chunk* removeFromFastChunks(Chunk* chunk_list) {
-    if(isPointingToSelf(*chunk_list)) {
-        return nullptr;
-    }
-    // when removing from the fast chunks we can remove the first one in the list, since
-    // we are not coalescing
-
-    Chunk *next_chunk = chunk_list->getNext();
-    unlinkChunk(next_chunk);
-    return next_chunk;
-}
-
-
 void unlinkChunk(Chunk* chunk) {
     // The only precondition here is that
     // next and prev chunk are not pointing to itself
@@ -217,7 +196,7 @@ void AfMalloc::free(void *p) {
 
     // Here we want to check if the chunk in the physical memory before us has actually
     // been freed. If so, we can try to merge those two
-    if(free_chunk->isPrevFree()) {
+    if(free_chunk->isPrevFree() && !isInFastBinRange(free_chunk->getSize())) {
         // previous chunk is free, we need to merge them
         std::size_t prev_size = free_chunk->getPrevSize();
 
@@ -226,8 +205,6 @@ void AfMalloc::free(void *p) {
         // if we don't do this here, then we will later have a problem
         // with merging two chunks and iterating over free chunks because of zeroing of memory
 
-        // TODO here we also need to update the head of the list when unlinking this chunk. This is a problem
-        assert(false);
         unlinkChunk(chunk_before);
 
         chunk_before->setSize( prev_size + free_chunk->getSize());
@@ -236,7 +213,7 @@ void AfMalloc::free(void *p) {
     }
 
     auto *next_chunk = moveToTheNextChunk(free_chunk, free_chunk->getSize());
-    // Small assert to check our chunk is not free until now. It can't be as we are only merging it now.
+    // Our chunk is not free until now. It can't be as we are only merging it now.
     assert(!next_chunk->isPrevFree());
 
     // This works even if we are at the at top, as on the top chunk we don't write size
@@ -244,13 +221,10 @@ void AfMalloc::free(void *p) {
 
     // if the next_chunk is free, we will merge the `freeChunk` and the `nextChunk`
     // otherwise `nextChunk` is allocated, and we can't merge these two
-    if(chunk_two_hops_in_front->isPrevFree()) {
+    if(chunk_two_hops_in_front->isPrevFree() && !isInFastBinRange(free_chunk->getSize())) {
         // nextChunk is free so we need to merge that one too
         free_chunk->setSize(free_chunk->getSize() + next_chunk->getSize());
 
-        // TODO here we also need to update the head of the list when unlinking this chunk. This is a problem
-        // as I need to find in which bucket is this chunk
-        assert(false);
         unlinkChunk(next_chunk);
 
         clearUpDataSpaceOfChunk(free_chunk);
@@ -260,30 +234,33 @@ void AfMalloc::free(void *p) {
     // when the nextChunk is free, if chunkTwoHopsInFront was free, it would be merged in the step before.
     // This way we know that our chunk is free, and only one step around us can be free
 
-
+    // We need to find where is the next chunk, as we might have merged it in the step before
     next_chunk = moveToTheNextChunk(free_chunk, free_chunk->getSize());
 
-
     if(next_chunk < af_arena_.top_) {
-        // Set on the next that chunk before is free
-        next_chunk->setPrevFree();
-        next_chunk->setPrevSize(free_chunk->getSize());
+        // Set that our chunk is free, only if it is not fast chunk.
+        // By not setting it for the fast chunk, we disable coalasceing for the fast chunks
+        if(!isInFastBinRange(free_chunk->getSize())) {
+            // Set on the next that chunk before is free
+            next_chunk->setPrevFree();
+            next_chunk->setPrevSize(free_chunk->getSize());
+        }
     }else {
-        // in this part of code we extend top to the free_chunk
-        // this means we can't add free chunk to the free list
-        next_chunk->setPrevFree();
-        next_chunk->setPrevSize(free_chunk->getSize());
-        // here we should actually merge our chunk with the top, and that way we have extended the unlimited free chunk
-        extendTopChunk();
+        if(!isInFastBinRange(free_chunk->getSize())) {
+            // next chunk here is arena.top_
+            assert(next_chunk == af_arena_.top_);
+            // in this part of code we extend top to the free_chunk
+            // this means we can't add free chunk to the free list
+            static_cast<Chunk*>(af_arena_.top_)->setPrevFree();
+            static_cast<Chunk*>(af_arena_.top_)->setPrevSize(free_chunk->getSize());
+            // here we should actually merge our chunk with the top, and that way we have extended the unlimited free chunk
+            extendTopChunk();
+        }
+        // We have extended the top, the rest of the code deals with adding the chunk to the unsorted chunks
         return;
     }
 
-    /// First we need to get the previous size of the chunk before us
-    // wipe out the memory too
-
-    // list of chunks how they became free in the list
-    // last in first out
-
+    // We append to the top of the list newly freed chunk
     Chunk *head_chunk = &af_arena_.unsorted_chunks_;
     if(isPointingToSelf(*head_chunk)) {
         head_chunk->setNext(free_chunk);
@@ -409,22 +386,21 @@ bool AfMalloc::isBinBitIndexSet(std::size_t bin, std::size_t bit) {
  * @return
  */
 Chunk *AfMalloc::tryFindFastBinChunk(const std::size_t size) {
-    std::vector<Chunk > &fast_chunks = af_arena_.fast_chunks_;
     auto [fast_bin_index, bit_index] = *findBinIndex(size);
     assert(fast_bin_index == FASTBINS_INDEX);
     auto index = bit_index;
 
-    Chunk *chunk_list{nullptr};
+
     while(true) {
-        chunk_list = &fast_chunks[index];
-        if(isPointingToSelf(*chunk_list)) {
-            // TODO mark chunks as they have no space
+        Chunk &chunk_list = af_arena_.fast_chunks_[index];
+        if(isPointingToSelf(chunk_list)) {
+            unsetBitIndex(fast_bin_index, bit_index);
             index++;
         }else {
-            Chunk *match = removeFromFastChunks(chunk_list);
-            if(match) {
-                return match;
-            }
+            Chunk *next_chunk = chunk_list.getNext();
+            unlinkChunk(next_chunk);
+            assert(next_chunk != nullptr);
+            return next_chunk;
         }
 
         // Not sure how malloc does this, but probably good idea to restrict this to one above
@@ -454,10 +430,10 @@ Chunk *AfMalloc::tryFindSmallBinChunk(std::size_t size) {
             unsetBitIndex(small_bin_index, index);
             index++;
         }else {
-            Chunk *match = removeFromFastChunks(chunk_list);
-            if(match) {
-                return match;
-            }
+            Chunk *match  = chunk_list->getPrev();
+            unlinkChunk(match);
+            assert(match != nullptr);
+            return match;
         }
 
         // Not sure how malloc does this, but probably good idea to restrict this to one above
@@ -502,20 +478,17 @@ void *AfMalloc::malloc(std::size_t size) {
         }
     }
     if(isInFastBinRange(needed_size)) {
-        auto *chunk = tryFindFastBinChunk(needed_size);
-        if(chunk) {
+        if(auto *chunk = tryFindFastBinChunk(needed_size)) {
             return chunk;
         }
     }
     if(isInSmallBinRange(needed_size)) {
-        auto *chunk = tryFindSmallBinChunk(needed_size);
-        if(chunk) {
+        if(auto *chunk = tryFindSmallBinChunk(needed_size)) {
             return chunk;
         }
     }
     if(!isPointingToSelf(af_arena_.unsorted_large_chunks_)) {
-        auto *chunk = tryFindLargeChunk(&af_arena_.unsorted_large_chunks_, needed_size);
-        if(chunk) {
+        if(auto *chunk = tryFindLargeChunk(&af_arena_.unsorted_large_chunks_, needed_size)) {
             return chunk;
         }
     }
@@ -554,9 +527,6 @@ void *AfMalloc::malloc(std::size_t size) {
     af_arena_.free_size_ -=  needed_size;
     af_arena_.top_ = moveToTheNextPlaceInMem(user_chunk, needed_size);
 
-    // if(isInFastBinRange()) {
-    //     markChunkAsUsed();
-    // }
 
     return moveToTheNextPlaceInMem(user_ptr, HEAD_OF_CHUNK_SIZE);
 }

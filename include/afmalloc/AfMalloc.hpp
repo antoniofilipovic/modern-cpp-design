@@ -191,7 +191,7 @@ struct AfArena{
   /**
    * Contains the list of unsorted chunks. List is populated on the free, and then on the malloc
    * we put the chunk in the corresponding bin. We traverse this double linked list in LIFO order, which is
-   * different from what malloc does (FIFO).
+   * different from what malloc does (FIFO). FIFO is better for giving chunks a chance to be reused.
    */
   Chunk unsorted_chunks_{0, 0, nullptr, nullptr};
 
@@ -245,8 +245,6 @@ Chunk *tryFindLargeChunk(Chunk *large_chunks, std::size_t size);
 bool isPointingToSelf(const Chunk &list_head);
 
 bool hasElementsInList(const Chunk &list_head);
-
-Chunk* removeFromFastChunks(Chunk* chunk_list);
 
 void unlinkChunk(Chunk* chunk);
 

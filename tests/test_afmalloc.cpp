@@ -318,9 +318,6 @@ TEST_F(BasicAfMallocSizeAllocated, TestMoveFromFreeChunks) {
 
 }
 
-TEST_F(BasicAfMallocSizeAllocated, TestMoveFromFreeChunks) {
-
-}
 
 TEST_F(BasicAfMallocSizeAllocated, DoubleFree) {
     // This should be possible to detect?
