@@ -390,25 +390,22 @@ Chunk *AfMalloc::tryFindFastBinChunk(const std::size_t size) {
     assert(fast_bin_index == FASTBINS_INDEX);
     auto index = bit_index;
 
-
-    while(true) {
+    // Traverse only up to 2 blocks away from our chunk
+    while(index < getMaxFastBinBitIndex() && (index - bit_index <= 2)) {
         Chunk &chunk_list = af_arena_.fast_chunks_[index];
-        if(isPointingToSelf(chunk_list)) { //TODO add immediate return
+        if(isPointingToSelf(chunk_list)) {
             unsetBitIndex(fast_bin_index, bit_index);
-            index++;
         }else {
+            // Not sure how malloc does this, but probably good idea to restrict this to one above
+            // if there is no exact match, otherwise we are wasting a lot of memory space
             Chunk *next_chunk = chunk_list.getNext();
             unlinkChunk(next_chunk);
             assert(next_chunk != nullptr);
             return next_chunk;
         }
-
-        // Not sure how malloc does this, but probably good idea to restrict this to one above
-        // if there is no exact match, otherwise we are wasting a lot of memory space
-        if(index > getMaxFastBinBitIndex() || index - bit_index >= 2 ) {
-            return nullptr;
-        }
+        index++;
     }
+    return nullptr;
 }
 
 /**
