@@ -101,8 +101,6 @@ class Chunk{
       return next_;
     }
 
-
-
     void setPrev(Chunk *prev) {
       prev_ = prev;
     }
@@ -118,8 +116,8 @@ class Chunk{
     std::size_t size_{0}; // this is chunk total size
     Chunk *prev_{nullptr};
     Chunk *next_{nullptr};
-
 };
+
 
 // When the chunk is allocated we store the user object from m_prev forwards
 
@@ -232,26 +230,25 @@ struct ListHeadRef {
 };
 
 
-
-
-ListHead  removeFromFreeChunks(ListHead list_head, Chunk* chunk);
-void  removeFromFreeChunks(ListHeadRef list_head, Chunk* chunk);
-
-void  unlinkChunk(Chunk* chunk);
-
 bool isInFastBinRange(std::size_t size);
 
 bool isInSmallBinRange(std::size_t size);
 
 bool hasLargeChunkFree();
 
-Chunk *tryFindFastBinChunk(const std::vector<Chunk *> &fast_chunks, std::size_t size);
 
-Chunk *tryFindSmallBinChunk(const std::vector<Chunk *> &small_chunks, std::size_t size);
 
 Chunk *tryFindLargeChunk(Chunk *large_chunks, std::size_t size);
 
+/////// Utility methods
 
+bool isPointingToSelf(const Chunk &list_head);
+
+bool hasElementsInList(const Chunk &list_head);
+
+Chunk* removeFromFastChunks(Chunk* chunk_list);
+
+void unlinkChunk(Chunk* chunk);
 
 
 
@@ -298,12 +295,9 @@ class AfMalloc{
       return af_arena_.begin_;
     }
 
-    /**
-      *
-      * @return
-    */
+
     Chunk *getUnsortedChunks() {
-      return af_arena_.unsorted_chunks_;
+      return &af_arena_.unsorted_chunks_;
     }
 
     ~AfMalloc();
@@ -327,11 +321,16 @@ class AfMalloc{
       void moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index);
       // removes this chunk from the list of free chunks
 
+      Chunk *tryFindFastBinChunk(std::size_t size);
+      Chunk *tryFindSmallBinChunk(std::size_t size);
 
 
 
+      void setBinIndex(std::size_t bin, std::size_t bit);
 
+      void unsetBitIndex(std::size_t bin, std::size_t bit);
 
+      bool isBinBitIndexSet(std::size_t bin, std::size_t bit);
 
       AfArena af_arena_{};
 };

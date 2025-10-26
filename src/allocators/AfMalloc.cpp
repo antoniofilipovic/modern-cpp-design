@@ -120,7 +120,7 @@ void AfMalloc::moveToUnsortedLargeChunks(Chunk *free_chunk) {
 
     free_chunk->setPrev(&af_arena_.unsorted_large_chunks_);
     af_arena_.unsorted_large_chunks_.setNext(free_chunk);
-    
+
 }
 
 void AfMalloc::moveToFastBinsChunks(Chunk *free_chunk, std::size_t bit_index) {
@@ -144,73 +144,36 @@ void AfMalloc::extendTopChunk(){
 
 
 
-void removeFromFreeChunks(ListHeadRef list_head_ref, Chunk* chunk) {
-    auto [list_head_] = removeFromFreeChunks(ListHead{list_head_ref.list_head_}, chunk);
-    list_head_ref.list_head_.get() = list_head_;
-}
-
 /**
  *
  * @param chunk Chunk we want to remove
  * @param list_head_ref reference to object holding pointer to the beginning of the list
  * @return new head
  */
-ListHead removeFromFreeChunks(ListHead list_head_ref, Chunk* chunk) {
-
-    Chunk *double_linked_list_iter = list_head_ref.list_head_;
-    Chunk *start = double_linked_list_iter;
-    if(double_linked_list_iter == nullptr) {
-        return ListHead{nullptr};
+Chunk* removeFromFastChunks(Chunk* chunk_list) {
+    if(isPointingToSelf(*chunk_list)) {
+        return nullptr;
     }
-    bool isIn{false};
-    do {
-        if(double_linked_list_iter == chunk) {
-            isIn = true;
-            break;
-        }
-        double_linked_list_iter = double_linked_list_iter->getNext();
-    }while(double_linked_list_iter != nullptr && double_linked_list_iter != start);
-    assert(isIn);
+    // when removing from the fast chunks we can remove the first one in the list, since
+    // we are not coalescing
 
-
-    auto *nextChunk = chunk->getNext();
-    auto *prevChunk = chunk->getPrev();
-
-    // in case chunk points on itself
-    if(nextChunk == prevChunk && nextChunk == chunk) {
-        return ListHead{nullptr};
-    }
-
-    // 2<--1<->2-->1
-    nextChunk->setPrev(prevChunk);
-    prevChunk->setNext(nextChunk);
-
-    if(list_head_ref.list_head_ == chunk) {
-        return ListHead{nextChunk};
-    }
-    return list_head_ref;
+    Chunk *next_chunk = chunk_list->getNext();
+    unlinkChunk(next_chunk);
+    return next_chunk;
 }
 
 
-void unlinkChunk(ListHeadRef list_head_ref, Chunk* chunk) {
-    assert(false);
-    // this should also try to find in which bucket is this chunk
+void unlinkChunk(Chunk* chunk) {
+    // The only precondition here is that
+    // next and prev chunk are not pointing to itself
 
     auto *nextChunk = chunk->getNext();
+    assert(nextChunk != chunk);
     auto *prevChunk = chunk->getPrev();
+    assert(prevChunk != chunk);
 
-    // in case chunk points on itself
-    if(nextChunk == prevChunk && nextChunk == chunk) {
-        list_head_ref.list_head_.get() = nullptr;
-    }
-
-    // 2<--1<->2-->1
     nextChunk->setPrev(prevChunk);
     prevChunk->setNext(nextChunk);
-
-    if(list_head_ref.list_head_ == chunk) {
-        list_head_ref.list_head_.get() = nextChunk;
-    }
 }
 
 AfMalloc::AfMalloc() {
@@ -232,6 +195,9 @@ void AfMalloc::init() {
     });
 
     af_arena_.unsorted_large_chunks_ = {0, 0, nullptr, nullptr};
+
+    // only FAST and SMALL bin indexes live here
+    af_arena_.bin_indexes_.resize(2, {0});
 }
 
 
@@ -345,7 +311,6 @@ AfMalloc::~AfMalloc() {
 void AfMalloc::moveChunkToCorrectBin(Chunk *current_chunk, std::size_t needed_size) {
     auto maybe_bin_index = findBinIndex(needed_size);
     // free_chunk_list -> 1 -> 2 - > 3
-    unlinkChunk(current_chunk);
     if(!maybe_bin_index) {
         moveToUnsortedLargeChunks(current_chunk);
     }else {
@@ -369,28 +334,18 @@ std::optional<void*> AfMalloc::findChunkFromUnsortedFreeChunks(std::size_t neede
 
     // Unsorted free chunks are stored in a double linked list
     Chunk *start  = &af_arena_.unsorted_chunks_;
-    Chunk *free_chunk_iter = start;
+    Chunk *current_chunk = start->getNext();
     Chunk *match{nullptr};
-    while(true) {
+    while(current_chunk != start) {
         // We are looking for the first chunk that we can find.
-        // For others we will go through the list of the free chunks, and store them in the appropriate bin
-        if(free_chunk_iter->getSize()  >= needed_size) {
-            match = free_chunk_iter;
+        // If we encounter a chunk which is not of needed size, we will move it to the appropriate bin
+        if(current_chunk->getSize()  >= needed_size) {
+            match = current_chunk;
             break;
         }
-        Chunk *prev = free_chunk_iter->getPrev();
-        moveChunkToCorrectBin(free_chunk_iter, needed_size);
-
-        // if we were the last chunk here
-        if(prev == free_chunk_iter) {
-            break;
-        }
-
-        free_chunk_iter = free_chunk_iter->getNext();
-
-        if(free_chunk_iter == start) {
-            break;
-        }
+        unlinkChunk(current_chunk);
+        moveChunkToCorrectBin(current_chunk, needed_size);
+        current_chunk = current_chunk->getNext();
     }
 
     if(match == nullptr) {
@@ -404,8 +359,8 @@ std::optional<void*> AfMalloc::findChunkFromUnsortedFreeChunks(std::size_t neede
     Chunk* next_chunk = moveToTheNextChunk(match, match->getSize());
     // next chunk only knows that we are free
     next_chunk->unsetPrevFree();
-    // this will be used by our chunk also, so we need to zero the memory
-    next_chunk->setPrevSize(0);
+    // this part of memory will be used by our chunk also, hence we need to zero the memory
+    next_chunk->setPrevSize(0x0000);
 
     // We don't need to call the construct here since we have already done so
     return moveToTheNextPlaceInMem(match, HEAD_OF_CHUNK_SIZE);
@@ -413,6 +368,10 @@ std::optional<void*> AfMalloc::findChunkFromUnsortedFreeChunks(std::size_t neede
 
 std::size_t getMaxFastBinBitIndex() {
     return FAST_BIN_RANGE_END / BIN_SPACING_SIZE;
+}
+
+std::size_t getMaxSmallBinBitIndex() {
+    return (SMALL_BIN_RANGE_END - FAST_BIN_RANGE_END) / BIN_SPACING_SIZE;
 }
 
 bool isInFastBinRange(std::size_t size) {
@@ -427,6 +386,19 @@ bool hasLargeChunkFree(Chunk *large_chunk) {
     return large_chunk != nullptr;
 }
 
+
+void AfMalloc::setBinIndex(std::size_t bin, std::size_t bit) {
+    af_arena_.bin_indexes_[bin] |= (1ul << bit);
+}
+
+void AfMalloc::unsetBitIndex(std::size_t bin, std::size_t bit) {
+    af_arena_.bin_indexes_[bin] &= ~(1ul << bit);
+}
+
+bool AfMalloc::isBinBitIndexSet(std::size_t bin, std::size_t bit) {
+    return af_arena_.bin_indexes_[bin].test(bit);
+}
+
 /**
  * Fast bin chunk gets allocated, we remove it from the list
  * Later we add it to the unsorted chunks, and insert back into the free list
@@ -434,35 +406,78 @@ bool hasLargeChunkFree(Chunk *large_chunk) {
  * @param size
  * @return
  */
-Chunk *tryFindFastBinChunk(std::vector<Chunk *> &fast_chunks, std::size_t size) {
-    auto [start_index, bit_index] = *findBinIndex(size);
-    assert(start_index == FASTBINS_INDEX);
-    auto index = start_index;
+Chunk *AfMalloc::tryFindFastBinChunk(const std::size_t size) {
+    std::vector<Chunk > &fast_chunks = af_arena_.fast_chunks_;
+    auto [fast_bin_index, bit_index] = *findBinIndex(size);
+    assert(fast_bin_index == FASTBINS_INDEX);
+    auto index = bit_index;
 
-    Chunk *free_list_chunks{nullptr};
+    Chunk *chunk_list{nullptr};
     while(true) {
-        free_list_chunks = fast_chunks[index];
-        if(free_list_chunks == nullptr) {
+        chunk_list = &fast_chunks[index];
+        if(isPointingToSelf(*chunk_list)) {
             // TODO mark chunks as they have no space
             index++;
         }else {
-            removeFromFreeChunks(ListHeadRef{fast_chunks[index]}, free_list_chunks);
+            Chunk *match = removeFromFastChunks(chunk_list);
+            if(match) {
+                return match;
+            }
         }
 
         // Not sure how malloc does this, but probably good idea to restrict this to one above
         // if there is no exact match, otherwise we are wasting a lot of memory space
-        if(index > getMaxFastBinBitIndex() || index - start_index >= 2 ) {
+        if(index > getMaxFastBinBitIndex() || index - bit_index >= 2 ) {
             return nullptr;
         }
     }
 }
 
-Chunk *tryFindSmallBinChunk(const std::vector<Chunk *> &small_chunks, std::size_t size) {
-    assert(false);
+/**
+ * Try to find chunk which is of same size, or one size larger.
+ * Not sure if we should iterate more here, and then just split the chunk if found
+ * @param size
+ * @return
+ */
+Chunk *AfMalloc::tryFindSmallBinChunk(std::size_t size) {
+    std::vector<Chunk > &small_chunks = af_arena_.small_chunks_;
+    auto [small_bin_index, bit_index] = *findBinIndex(size);
+    assert(small_bin_index == SMALLBINS_INDEX);
+    auto index = bit_index;
+
+    Chunk *chunk_list{nullptr};
+    while(true) {
+        chunk_list = &small_chunks[index];
+        if(isPointingToSelf(*chunk_list) || !isBinBitIndexSet(small_bin_index, index)) {
+            unsetBitIndex(small_bin_index, index);
+            index++;
+        }else {
+            Chunk *match = removeFromFastChunks(chunk_list);
+            if(match) {
+                return match;
+            }
+        }
+
+        // Not sure how malloc does this, but probably good idea to restrict this to one above
+        // if there is no exact match, otherwise we are wasting a lot of memory space
+        if(index > getMaxSmallBinBitIndex() || index - bit_index >= 2 ) {
+            return nullptr;
+        }
+    }
 }
 
 Chunk *tryFindLargeChunk(Chunk *large_chunks, std::size_t size) {
-    assert(false);
+    Chunk *current = large_chunks->getPrev();
+    while(large_chunks != current) {
+        if (current->getSize() >= size) {
+            unlinkChunk(current);
+            // TODO prepare chunk to be returned to user
+            // Also split the chunk maybe
+            return current;
+        }
+        current = current->getPrev();
+    }
+    return nullptr;
 }
 
 bool isPointingToSelf(const Chunk &list_head) {
@@ -480,24 +495,24 @@ void *AfMalloc::malloc(std::size_t size) {
 
     // if there are free chunks, try to use them
     if(hasElementsInList(af_arena_.unsorted_chunks_)) {
-        if(auto maybe_chunk = findChunkFromUnsortedFreeChunks(ListHead{&af_arena_.unsorted_chunks_}, needed_size)) {
+        if(auto maybe_chunk = findChunkFromUnsortedFreeChunks(needed_size)) {
             return *maybe_chunk;
         }
     }
     if(isInFastBinRange(needed_size)) {
-        auto *chunk = tryFindFastBinChunk(af_arena_.fast_chunks_, needed_size);
+        auto *chunk = tryFindFastBinChunk(needed_size);
         if(chunk) {
             return chunk;
         }
     }
     if(isInSmallBinRange(needed_size)) {
-        auto *chunk =tryFindSmallBinChunk(af_arena_.small_chunks_, needed_size);
+        auto *chunk = tryFindSmallBinChunk(needed_size);
         if(chunk) {
             return chunk;
         }
     }
-    if(hasLargeChunkFree(af_arena_.unsorted_large_chunks)) {
-        auto *chunk = tryFindLargeChunk(af_arena_.unsorted_large_chunks, needed_size);
+    if(!isPointingToSelf(af_arena_.unsorted_large_chunks_)) {
+        auto *chunk = tryFindLargeChunk(&af_arena_.unsorted_large_chunks_, needed_size);
         if(chunk) {
             return chunk;
         }
