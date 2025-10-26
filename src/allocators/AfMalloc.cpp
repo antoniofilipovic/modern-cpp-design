@@ -358,7 +358,7 @@ bool isInFastBinRange(std::size_t size) {
 }
 
 bool isInSmallBinRange(std::size_t size) {
-    return size <= SMALL_BIN_RANGE_END;
+    return size >= FAST_BIN_RANGE_END && size <= SMALL_BIN_RANGE_END;
 }
 
 bool hasLargeChunkFree(Chunk *large_chunk) {
@@ -393,7 +393,7 @@ Chunk *AfMalloc::tryFindFastBinChunk(const std::size_t size) {
 
     while(true) {
         Chunk &chunk_list = af_arena_.fast_chunks_[index];
-        if(isPointingToSelf(chunk_list)) {
+        if(isPointingToSelf(chunk_list)) { //TODO add immediate return
             unsetBitIndex(fast_bin_index, bit_index);
             index++;
         }else {
