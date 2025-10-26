@@ -5,10 +5,10 @@
 #include <memory>
 #include <cstring>
 #include <optional>
+#include <algorithm>
 
 #include "AfMalloc.hpp"
 
-#include <bits/ranges_algo.h>
 #include <sys/mman.h>
 
 #define MMAP(addr, size, prot, flags) \
@@ -162,15 +162,15 @@ AfMalloc::AfMalloc() {
 void AfMalloc::init() {
     // TODO this should be implemented that we allocate memory with our own allocator and size
     af_arena_.fast_chunks_.resize(NUM_FAST_CHUNKS, {0, 0, nullptr, nullptr});
-    std::ranges::for_each(af_arena_.fast_chunks_, [](auto &chunk) {
-        chunk.getNext() = &chunk;
-        chunk.getPrev() = &chunk;
+    std::ranges::for_each(af_arena_.fast_chunks_, [](Chunk &chunk) {
+        chunk.setNext(&chunk);
+        chunk.setPrev(&chunk);
     });
 
     af_arena_.small_chunks_.resize(NUM_FAST_CHUNKS, {0, 0, nullptr, nullptr});
     std::ranges::for_each(af_arena_.small_chunks_, [](auto &chunk) {
-        chunk.getNext() = &chunk;
-        chunk.getPrev() = &chunk;
+        chunk.setNext(&chunk);
+        chunk.setPrev(&chunk);
     });
 
     af_arena_.unsorted_large_chunks_ = {0, 0, nullptr, nullptr};
