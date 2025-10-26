@@ -283,22 +283,24 @@ void AfMalloc::free(void *p) {
 
     // list of chunks how they became free in the list
     // last in first out
-    if(af_arena_.unsorted_chunks_ == nullptr) {
-        af_arena_.unsorted_chunks_ = free_chunk;
-        af_arena_.unsorted_chunks_->setNext(free_chunk);
-        af_arena_.unsorted_chunks_->setPrev(free_chunk);
+
+    Chunk *head_chunk = &af_arena_.unsorted_chunks_;
+    if(isPointingToSelf(*head_chunk)) {
+        head_chunk->setNext(free_chunk);
+        head_chunk->setPrev(free_chunk);
+
+        free_chunk->setNext(head_chunk);
+        free_chunk->setPrev(head_chunk);
         return;
     }
-    Chunk *last_in_chunk = af_arena_.unsorted_chunks_;
-    Chunk *first_in_chunk = last_in_chunk->getPrev();
+
+    Chunk *last_in_chunk = head_chunk->getNext();
+
+    free_chunk->setPrev(head_chunk);
     free_chunk->setNext(last_in_chunk);
-    free_chunk->setPrev(first_in_chunk);
 
     last_in_chunk->setPrev(free_chunk);
-    first_in_chunk->setNext(free_chunk);
-
-    af_arena_.unsorted_chunks_ = free_chunk;
-
+    head_chunk->setNext(free_chunk);
 }
 
 AfMalloc::~AfMalloc() {
