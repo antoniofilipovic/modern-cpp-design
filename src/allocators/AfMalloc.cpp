@@ -135,7 +135,7 @@ void AfMalloc::extendTopChunk(){
     auto *top_chunk = static_cast<Chunk *>(getTop());
     assert(top_chunk->isPrevFree());
     Chunk *prev_chunk = moveToThePreviousChunk(top_chunk, top_chunk->getPrevSize());
-    unlinkChunk(prev_chunk);
+    assert(prev_chunk->getNext() == nullptr && prev_chunk->getPrev() == nullptr);
     clearUpDataSpaceOfChunk(prev_chunk);
     af_arena_.top_ = prev_chunk;
     prev_chunk->unsetPrevFree();
@@ -473,7 +473,7 @@ bool isPointingToSelf(const Chunk &list_head) {
     if(list_head.getPrev() == &list_head) {
         assert(list_head.getNext() == &list_head);
     }
-    return list_head.getPrev() == &list_head && list_head.getNext() != &list_head;
+    return list_head.getPrev() == &list_head && list_head.getNext() == &list_head;
 }
 
 bool hasElementsInList(const Chunk &list_head) {
