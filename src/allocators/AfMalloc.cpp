@@ -172,11 +172,19 @@ void AfMalloc::init() {
         chunk.setNext(&chunk);
         chunk.setPrev(&chunk);
     });
-
+    // Set chunks to point to itself
     af_arena_.unsorted_large_chunks_ = {0, 0, nullptr, nullptr};
+    af_arena_.unsorted_large_chunks_.setNext(&af_arena_.unsorted_large_chunks_);
+    af_arena_.unsorted_large_chunks_.setPrev(&af_arena_.unsorted_large_chunks_);
+
+    af_arena_.unsorted_chunks_ = {0, 0, nullptr, nullptr};
+    af_arena_.unsorted_chunks_.setNext(&af_arena_.unsorted_chunks_);
+    af_arena_.unsorted_chunks_.setPrev(&af_arena_.unsorted_chunks_);
+
 
     // only FAST and SMALL bin indexes live here
     af_arena_.bin_indexes_.resize(2, {0});
+
 }
 
 
@@ -313,6 +321,7 @@ std::optional<void*> AfMalloc::findChunkFromUnsortedFreeChunks(std::size_t neede
 
     // Unsorted free chunks are stored in a double linked list
     Chunk *start  = &af_arena_.unsorted_chunks_;
+    assert(start->getNext() != nullptr);
     Chunk *current_chunk = start->getNext();
     Chunk *match{nullptr};
     while(current_chunk != start) {
@@ -456,7 +465,15 @@ Chunk *tryFindLargeChunk(Chunk *large_chunks, std::size_t size) {
 }
 
 bool isPointingToSelf(const Chunk &list_head) {
-    return list_head.getPrev() == list_head.getNext();
+    // Basic check that if next points to self, previous should too
+    if(list_head.getNext() == &list_head) {
+        assert(list_head.getPrev() == &list_head);
+    }
+    // or if previous points to self, next should too
+    if(list_head.getPrev() == &list_head) {
+        assert(list_head.getNext() == &list_head);
+    }
+    return list_head.getPrev() == &list_head && list_head.getNext() != &list_head;
 }
 
 bool hasElementsInList(const Chunk &list_head) {
