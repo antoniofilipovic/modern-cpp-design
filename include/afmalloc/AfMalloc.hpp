@@ -109,6 +109,14 @@ class Chunk{
       next_ = next;
     }
 
+    [[nodiscard]] std::size_t getFlags() const {
+      return isPrevFree()? PREV_FREE : 0;
+    }
+
+    bool operator==(const Chunk &other) const {
+      return other.getNext() == getNext() && other.getPrev() == getPrev() &&  other.size_== size_ && other.previous_size_ == previous_size_;
+    }
+
 
 
   private:

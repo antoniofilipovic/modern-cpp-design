@@ -22,6 +22,14 @@ static_assert(sizeof(uintptr_t) == sizeof(void *));
 static_assert(sizeof(uintptr_t) == 8);
 
 
+bool isChunkPointingToPrevAndNext(const Chunk &chunk, Chunk* prev, Chunk *next) {
+    return chunk.getPrev() == prev && chunk.getNext() == next;
+}
+
+bool isChunkPrevAndNextSizeCorrect(const Chunk &chunk, std::size_t prev_size, std::size_t size, std::size_t flags) {
+    return chunk.getSize() == size && chunk.getPrevSize() == prev_size && chunk.getFlags() == flags;
+}
+
 class BasicAfMallocSizeAllocated : public ::testing::Test {
 public:
     BasicAfMallocSizeAllocated() = default;
@@ -102,20 +110,15 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3Chunks) {
 
     void *ptr = af_malloc.malloc(FAST_BIN_RANGE_END + 10);
     Chunk *first_chunk = moveToThePreviousChunk(ptr, HEAD_OF_CHUNK_SIZE);
-    ASSERT_EQ(first_chunk->getSize(), FAST_BIN_RANGE_END+32);
-    ASSERT_EQ(first_chunk->getPrevSize(), 0);
-    ASSERT_EQ(first_chunk->getNext(), nullptr);
-    ASSERT_EQ(first_chunk->getPrev(), nullptr);
+    ASSERT_EQ(*first_chunk, (Chunk{0, FAST_BIN_RANGE_END+32, nullptr, nullptr}));
 
     char *first_str = reinterpret_cast<char *>(ptr);
     strcpy(first_str, "lala");
 
     void *second_ptr = af_malloc.malloc(FAST_BIN_RANGE_END+25);
     Chunk *second_chunk = moveToThePreviousChunk(second_ptr, HEAD_OF_CHUNK_SIZE);
-    ASSERT_EQ(second_chunk->getSize(), FAST_BIN_RANGE_END + 48);
-    ASSERT_EQ(second_chunk->getPrevSize(), 0);
-    ASSERT_EQ(second_chunk->getNext(), nullptr);
-    ASSERT_EQ(second_chunk->getPrev(), nullptr);
+    ASSERT_EQ(getMallocNeededSize(25), 48);
+    ASSERT_EQ(*second_chunk, (Chunk{0, FAST_BIN_RANGE_END+48, nullptr, nullptr}));
 
     char *string_ptr = reinterpret_cast<char *>(second_ptr);
     strcpy(string_ptr, "po");
@@ -123,59 +126,45 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3Chunks) {
 
     void *third_ptr = af_malloc.malloc(FAST_BIN_RANGE_END+35);
     Chunk *third_chunk = moveToThePreviousChunk(third_ptr, HEAD_OF_CHUNK_SIZE);
-    ASSERT_EQ(third_chunk->getSize(), FAST_BIN_RANGE_END+48); // 35 - 32 = 3 => 3 fits into the 8 bytes of the next chunk, add additional 16 bytes for HEAD_OF_CHUNK
-    ASSERT_EQ(third_chunk->getPrevSize(), 0);
-    ASSERT_EQ(third_chunk->getNext(), nullptr);
-    ASSERT_EQ(third_chunk->getPrev(), nullptr);
+    // 35 - 32 = 3 => 3 fits into the 8 bytes of the next chunk, add additional 16 bytes for HEAD_OF_CHUNK
+    ASSERT_EQ(*third_chunk, (Chunk{0, FAST_BIN_RANGE_END+48, nullptr, nullptr}));
+
+
     char *third_str = reinterpret_cast<char *>(third_ptr);
     strcpy(third_str, "deda");
 
 
     af_malloc.free(ptr);
     auto *free_chunk_list = af_malloc.getUnsortedChunks();
-    // Free chunk list
-    ASSERT_EQ(free_chunk_list->getNext(), free_chunk_list->getPrev());
+    // Free chunk list is not pointing to self but to first chunk
     ASSERT_FALSE(isPointingToSelf(*free_chunk_list));
 
     // Assert the free chunk list start points correctly to the first chunk
     ASSERT_EQ(free_chunk_list->getNext(), first_chunk);
     ASSERT_EQ(free_chunk_list->getPrev(), first_chunk);
 
-    // assert that in two hops we reach ourself
-    ASSERT_EQ(first_chunk->getNext()->getNext(), first_chunk);
-    ASSERT_EQ(first_chunk->getPrev()->getPrev(), first_chunk);
-
-    //
-    ASSERT_EQ(first_chunk->getPrevSize(), 0);
-    ASSERT_EQ(first_chunk->getSize(), FAST_BIN_RANGE_END+32);
-    ASSERT_EQ(first_chunk->isPrevFree(), false);
+    // assert that first chunk points back to free_chunk_list
+    // Also that prev_size is 0 and size is our size without isPrevFree flag set
+    ASSERT_EQ(*first_chunk, (Chunk{0,  FAST_BIN_RANGE_END+32, free_chunk_list, free_chunk_list}));
 
     // Prev size of second chunk should be filled
-    ASSERT_EQ(second_chunk->getPrevSize(), FAST_BIN_RANGE_END+32);
-    ASSERT_EQ(second_chunk->getSize(), FAST_BIN_RANGE_END+48);
-    ASSERT_EQ(second_chunk->isPrevFree(), true);
-
-    ASSERT_EQ(third_chunk->getPrevSize(), 0);
+    // We can't check next and prev as chunk is still using that space for user data
+    ASSERT_TRUE(isChunkPrevAndNextSizeCorrect(*second_chunk, first_chunk->getSize(), (FAST_BIN_RANGE_END+48), PREV_FREE));
 
     // second free
     af_malloc.free(second_ptr);
 
     auto *free_chunk_list_second_free = af_malloc.getUnsortedChunks();
     ASSERT_EQ(free_chunk_list_second_free, free_chunk_list);
-    ASSERT_EQ(free_chunk_list_second_free->getNext(), first_chunk);
-    ASSERT_EQ(free_chunk_list_second_free->getPrev(), first_chunk);
-
-    ASSERT_FALSE(isPointingToSelf(*free_chunk_list_second_free));
+    ASSERT_TRUE(isChunkPointingToPrevAndNext(*free_chunk_list_second_free, first_chunk, first_chunk));
 
     ASSERT_EQ(first_chunk->getSize(), FAST_BIN_RANGE_END*2 + 32 + 48); // 32 + 48
     ASSERT_EQ(first_chunk->getPrevSize(), 0);
 
 
-    // should assert equal to 0 memory
-    ASSERT_EQ(second_chunk->getSize(), 0);
-    ASSERT_EQ(second_chunk->getNext(), nullptr);
-    ASSERT_EQ(second_chunk->isPrevFree(), false);
-    ASSERT_EQ(second_chunk->getPrevSize(), 0);
+    char emptyBuffer[sizeof(Chunk)]{};
+    // should be equal
+    ASSERT_EQ(memcmp(&emptyBuffer, second_chunk, sizeof(Chunk)), 0);
 
     // What is written in the first chunk in size, that should be written in the third chunk also
     ASSERT_EQ(third_chunk->getPrevSize(),  FAST_BIN_RANGE_END*2 + 32 + 48);
@@ -189,14 +178,12 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3Chunks) {
     Chunk *third_free_chunk_list = af_malloc.getUnsortedChunks();
     ASSERT_TRUE(isPointingToSelf(*third_free_chunk_list));
 
-
-    // This is original pointer to the memory
+    // third_chunk is original pointer to the memory
     // since I haven't called destroy on this object, it should still be alive, but otherwise I would need to use
     // bit_cast
-    ASSERT_EQ(third_chunk->getSize(), 0);
-    ASSERT_EQ(third_chunk->isPrevFree(), false);
-    ASSERT_EQ(third_chunk->getNext(), nullptr);
-    ASSERT_EQ(third_chunk->getPrev(), nullptr);
+    ASSERT_EQ(memcmp(&emptyBuffer, third_chunk, sizeof(Chunk)), 0);
+    ASSERT_EQ(memcmp(&emptyBuffer, first_chunk, sizeof(Chunk)), 0);
+
 
     ASSERT_EQ(af_malloc.getTop(), first_chunk);
 }

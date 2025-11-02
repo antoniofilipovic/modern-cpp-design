@@ -263,9 +263,11 @@ void AfMalloc::free(void *p) {
             static_cast<Chunk*>(af_arena_.top_)->setPrevSize(free_chunk->getSize());
             // here we should actually merge our chunk with the top, and that way we have extended the unlimited free chunk
             extendTopChunk();
+            // We have extended the top, the rest of the code deals with adding the chunk to the unsorted chunks
+            return;
         }
-        // We have extended the top, the rest of the code deals with adding the chunk to the unsorted chunks
-        return;
+        // otherwise if it is free chunk we have not extended the top and we need to add it to the
+        // unsorted chunks
     }
 
     // We append to the top of the list newly freed chunk
