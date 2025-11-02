@@ -25,6 +25,8 @@ static_assert(SIZE_OF_SIZE == 8);
 // 63 may come out of random, but it is sizeof(std::size_t) * CHAR_NUM_BITS - 1
 static std::size_t PREV_FREE = 1ul << 63;
 
+static std::size_t EMPTY_FLAG = 0ul;
+
 // 32 pages, or 128kB
 constexpr std::size_t MAX_HEAP_SIZE = 32*4096;
 
@@ -158,6 +160,8 @@ void* moveToTheNextPlaceInMem(void *ptr, std::size_t size);
 
 void* moveToThePreviousPlaceInMem(void *ptr, std::size_t size);
 
+
+bool isChunkCoalescable(const Chunk &chunk);
 /**
  *
  * @param size size for which to calculate how much we need to allocate

@@ -105,6 +105,10 @@ void clearUpDataSpaceOfChunk(Chunk *chunk) {
     memset(data_start, 0, chunk->getSize() - HEAD_OF_CHUNK_SIZE);
 }
 
+bool isChunkCoalescable(const Chunk &chunk) {
+    return chunk.getSize() > FAST_BIN_RANGE_END;
+}
+
 
 AfArena::AfArena() : bin_indexes_(2) {
     // TODO eat own dog food for bin indexes?
@@ -204,7 +208,7 @@ void AfMalloc::free(void *p) {
 
     // Here we want to check if the chunk in the physical memory before us has actually
     // been freed. If so, we can try to merge those two
-    if(free_chunk->isPrevFree() && !isInFastBinRange(free_chunk->getSize())) {
+    if(free_chunk->isPrevFree() && isChunkCoalescable(*free_chunk)) {
         // previous chunk is free, we need to merge them
         std::size_t prev_size = free_chunk->getPrevSize();
 
@@ -214,6 +218,7 @@ void AfMalloc::free(void *p) {
         // with merging two chunks and iterating over free chunks because of zeroing of memory
 
         unlinkChunk(chunk_before);
+        //std::destroy_at<Chunk>(chunk_before);
 
         chunk_before->setSize( prev_size + free_chunk->getSize());
         free_chunk = chunk_before;
@@ -229,11 +234,13 @@ void AfMalloc::free(void *p) {
 
     // if the next_chunk is free, we will merge the `freeChunk` and the `nextChunk`
     // otherwise `nextChunk` is allocated, and we can't merge these two
-    if(chunk_two_hops_in_front->isPrevFree() && !isInFastBinRange(free_chunk->getSize())) {
+    if(chunk_two_hops_in_front->isPrevFree() && isChunkCoalescable(*free_chunk)) {
         // nextChunk is free so we need to merge that one too
         free_chunk->setSize(free_chunk->getSize() + next_chunk->getSize());
 
         unlinkChunk(next_chunk);
+        // TODO add destroy at
+        //std::destroy_at<Chunk>(next_chunk);
 
         clearUpDataSpaceOfChunk(free_chunk);
         chunk_two_hops_in_front->setPrevFree();
@@ -248,13 +255,16 @@ void AfMalloc::free(void *p) {
     if(next_chunk < af_arena_.top_) {
         // Set that our chunk is free, only if it is not fast chunk.
         // By not setting it for the fast chunk, we disable coalasceing for the fast chunks
-        if(!isInFastBinRange(free_chunk->getSize())) {
+        if(isChunkCoalescable(*free_chunk)) {
             // Set on the next that chunk before is free
             next_chunk->setPrevFree();
             next_chunk->setPrevSize(free_chunk->getSize());
+        }else {
+            // this is needed for force coalescing of fast chunks later
+            next_chunk->setPrevSize(free_chunk->getSize());
         }
     }else {
-        if(!isInFastBinRange(free_chunk->getSize())) {
+        if(isChunkCoalescable(*free_chunk)) {
             // next chunk here is arena.top_
             assert(next_chunk == af_arena_.top_);
             // in this part of code we extend top to the free_chunk
@@ -265,9 +275,9 @@ void AfMalloc::free(void *p) {
             extendTopChunk();
             // We have extended the top, the rest of the code deals with adding the chunk to the unsorted chunks
             return;
+        }else {
+            static_cast<Chunk*>(af_arena_.top_)->setPrevSize(free_chunk->getSize());
         }
-        // otherwise if it is free chunk we have not extended the top and we need to add it to the
-        // unsorted chunks
     }
 
     // We append to the top of the list newly freed chunk

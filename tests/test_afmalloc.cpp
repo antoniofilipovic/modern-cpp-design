@@ -113,6 +113,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3Chunks) {
     ASSERT_EQ(*first_chunk, (Chunk{0, FAST_BIN_RANGE_END+32, nullptr, nullptr}));
 
     char *first_str = reinterpret_cast<char *>(ptr);
+    // writing random stuff so we can test zeroing of memory
     strcpy(first_str, "lala");
 
     void *second_ptr = af_malloc.malloc(FAST_BIN_RANGE_END+25);
@@ -189,33 +190,24 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3Chunks) {
 }
 
 
-TEST_F(BasicAfMallocSizeAllocated, TestAfNoConsolidatingFastChunks) {
-    // TODO decide if we want to write the size in the prev size
+TEST_F(BasicAfMallocSizeAllocated, TestAfNoCoalescingFastChunks) {
+    // We want to write the size in the prev size
     // how that should behave for top_chunk
-    // if and what we do in case we want to coalasce free chunks
-    // when do we move free chunks to fast binss- > on malloc is the correct answer here
+    // when do we move free chunks to fast bins- > on malloc is the correct answer here
     // Test that fast chunks are not coalesce
-     // To test coalescing of the chunks, we need to allocate chunks which are not in the
-    // fastbin range, as otherwise they will not be coalasced
     AfMalloc af_malloc{};
 
 
     void *ptr = af_malloc.malloc(10);
     Chunk *first_chunk = moveToThePreviousChunk(ptr, HEAD_OF_CHUNK_SIZE);
-    ASSERT_EQ(first_chunk->getSize(), 32);
-    ASSERT_EQ(first_chunk->getPrevSize(), 0);
-    ASSERT_EQ(first_chunk->getNext(), nullptr);
-    ASSERT_EQ(first_chunk->getPrev(), nullptr);
+    ASSERT_EQ(*first_chunk, (Chunk{0, 32, nullptr, nullptr}));
 
     char *first_str = reinterpret_cast<char *>(ptr);
     strcpy(first_str, "lala");
 
     void *second_ptr = af_malloc.malloc(25);
     Chunk *second_chunk = moveToThePreviousChunk(second_ptr, HEAD_OF_CHUNK_SIZE);
-    ASSERT_EQ(second_chunk->getSize(), 48);
-    ASSERT_EQ(second_chunk->getPrevSize(), 0);
-    ASSERT_EQ(second_chunk->getNext(), nullptr);
-    ASSERT_EQ(second_chunk->getPrev(), nullptr);
+    ASSERT_EQ(*second_chunk, (Chunk{0, 48, nullptr, nullptr}));
 
     char *string_ptr = reinterpret_cast<char *>(second_ptr);
     strcpy(string_ptr, "po");
@@ -223,30 +215,31 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfNoConsolidatingFastChunks) {
 
     void *third_ptr = af_malloc.malloc(35);
     Chunk *third_chunk = moveToThePreviousChunk(third_ptr, HEAD_OF_CHUNK_SIZE);
-    ASSERT_EQ(third_chunk->getSize(), 48); // 35 - 32 = 3 => 3 fits into the 8 bytes of the next chunk, add additional 16 bytes for HEAD_OF_CHUNK
-    ASSERT_EQ(third_chunk->getPrevSize(), 0);
-    ASSERT_EQ(third_chunk->getNext(), nullptr);
-    ASSERT_EQ(third_chunk->getPrev(), nullptr);
+    // 35 - 32 = 3 => 3 fits into the 8 bytes of the next chunk, add additional 16 bytes for HEAD_OF_CHUNK
+    ASSERT_EQ(*third_chunk, (Chunk{0, 48, nullptr, nullptr}));
+
     char *third_str = reinterpret_cast<char *>(third_ptr);
     strcpy(third_str, "deda");
 
 
     af_malloc.free(ptr);
     auto *free_chunk_list = af_malloc.getUnsortedChunks();
-    // Free chunk list
-    ASSERT_TRUE(isPointingToSelf(*free_chunk_list));
+    // We should add fast chunk to unsorted chunks first, before
+    // moving them to the fast chunk bin
+    ASSERT_FALSE(isPointingToSelf(*free_chunk_list));
 
 
-    //
-    ASSERT_EQ(first_chunk->getPrevSize(), 0);
-    ASSERT_EQ(first_chunk->getSize(), 32);
-    ASSERT_EQ(first_chunk->isPrevFree(), false);
+    // Assert the free chunk list start points correctly to the first chunk
+    ASSERT_EQ(free_chunk_list->getNext(), first_chunk);
+    ASSERT_EQ(free_chunk_list->getPrev(), first_chunk);
+
+    // assert that first chunk points back to free_chunk_list
+    // Also that prev_size is 0 and size is our size without isPrevFree flag set
+    ASSERT_EQ(*first_chunk, (Chunk{0,  32, free_chunk_list, free_chunk_list}));
 
     // Prev size of second chunk should be filled
-    ASSERT_EQ(second_chunk->getPrevSize(), 32);
-    ASSERT_EQ(second_chunk->getSize(), 48);
-    // Previous can't be free at any time, but we can write size, since this is fast chunk
-    ASSERT_EQ(second_chunk->isPrevFree(), false);
+    // No flag should be set, (i.e IS_PREV_FREE)
+    ASSERT_TRUE(isChunkPrevAndNextSizeCorrect(*second_chunk, first_chunk->getSize(), 48, EMPTY_FLAG));
 
     ASSERT_EQ(third_chunk->getPrevSize(), 0);
 
@@ -254,20 +247,36 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfNoConsolidatingFastChunks) {
     af_malloc.free(second_ptr);
 
     auto *free_chunk_list_second_free = af_malloc.getUnsortedChunks();
-    ASSERT_TRUE(isPointingToSelf(*free_chunk_list_second_free));
+    ASSERT_FALSE(isPointingToSelf(*free_chunk_list_second_free));
 
-    ASSERT_EQ(first_chunk->getSize(), 32);
+    ASSERT_EQ(free_chunk_list_second_free, free_chunk_list);
 
-    ASSERT_EQ(second_chunk->getSize(), 48);
-    ASSERT_FALSE(third_chunk->isPrevFree());
-    ASSERT_EQ(third_chunk->getPrevSize(), 48);
+    ASSERT_TRUE(isChunkPointingToPrevAndNext(*free_chunk_list_second_free, first_chunk, second_chunk));
+
+    ASSERT_EQ(*first_chunk, (Chunk{0,  32, second_chunk, free_chunk_list_second_free}));
+    ASSERT_EQ(*second_chunk, (Chunk{32,  48, free_chunk_list_second_free, first_chunk}));
+
+
+    ASSERT_TRUE(isChunkPrevAndNextSizeCorrect(*third_chunk, second_chunk->getSize(), 48, EMPTY_FLAG));
+
 
     af_malloc.free(third_ptr);
 
     Chunk *third_free_chunk_list = af_malloc.getUnsortedChunks();
-    ASSERT_TRUE(isPointingToSelf(*third_free_chunk_list));
+    ASSERT_FALSE(isPointingToSelf(*third_free_chunk_list));
+    ASSERT_EQ(third_free_chunk_list, free_chunk_list);
 
-    ASSERT_EQ(af_malloc.getTop(), first_chunk);
+    ASSERT_TRUE(isChunkPointingToPrevAndNext(*third_free_chunk_list, first_chunk, third_chunk));
+
+    ASSERT_EQ(*first_chunk, (Chunk{0,  32, second_chunk, third_free_chunk_list}));
+    ASSERT_EQ(*second_chunk, (Chunk{32,  48, third_chunk, first_chunk}));
+    ASSERT_EQ(*third_chunk, (Chunk{48,  48, third_free_chunk_list, second_chunk}));
+
+}
+
+
+TEST_F(BasicAfMallocSizeAllocated, TestChunkIsMovedToTheCorrectBin) {
+    // we need to trigger moving of the chunk by calling malloc after frees
 }
 
 
