@@ -277,6 +277,53 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfNoCoalescingFastChunks) {
 
 TEST_F(BasicAfMallocSizeAllocated, TestChunkIsMovedToTheCorrectBin) {
     // we need to trigger moving of the chunk by calling malloc after frees
+    AfMalloc af_malloc{};
+
+    void *ptr_1 = af_malloc.malloc(10);
+    void *ptr_2 = af_malloc.malloc(30);
+    void *ptr_3 = af_malloc.malloc(100);
+    void *ptr_4 = af_malloc.malloc(FAST_BIN_RANGE_END + 20);
+    void *ptr_5 = af_malloc.malloc(100);
+    void *ptr_6 = af_malloc.malloc(FAST_BIN_RANGE_END + 40);
+    void *ptr_7 = af_malloc.malloc(25);
+    af_malloc.free(ptr_1);
+    af_malloc.free(ptr_2);
+    af_malloc.free(ptr_3);
+    af_malloc.free(ptr_4);
+    af_malloc.free(ptr_5);
+    af_malloc.free(ptr_6);
+    af_malloc.free(ptr_7);
+    Chunk *unsorted_chunks = af_malloc.getUnsortedChunks();
+    // This test case makes it impossible to coalesce chunks as they are allocated in between normal size chunks
+    Chunk *chunk_7 = moveToThePreviousChunk(ptr_7, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(unsorted_chunks->getNext(), chunk_7);
+    Chunk *chunk_6 = moveToThePreviousChunk(ptr_6, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(chunk_7->getNext(), chunk_6);
+    Chunk *chunk_5 = moveToThePreviousChunk(ptr_5, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(chunk_6->getNext(), chunk_5);
+    Chunk *chunk_4 = moveToThePreviousChunk(ptr_4, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(chunk_5->getNext(), chunk_4);
+    Chunk *chunk_3 = moveToThePreviousChunk(ptr_3, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(chunk_4->getNext(), chunk_3);
+    Chunk *chunk_2 = moveToThePreviousChunk(ptr_2, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(chunk_3->getNext(), chunk_2);
+    Chunk *chunk_1 = moveToThePreviousChunk(ptr_1, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(chunk_2->getNext(), chunk_1);
+
+    // this chunk does not exist in the unsorted chunks, and we should move our chunks to the new bins
+    void *ptr_8=af_malloc.malloc(FAST_BIN_RANGE_END + 200);
+
+
+    Chunk *unsorted_chunks_2 = af_malloc.getUnsortedChunks();
+    ASSERT_TRUE(isPointingToSelf(*unsorted_chunks_2));
+
+    auto &fast_bin_chunks = af_malloc.getFastBinChunks();
+    auto [bin_10_bytes, bit_10_bytes] = *findBinIndex(getMallocNeededSize(10));
+    ASSERT_EQ(bin_10_bytes, FASTBINS_INDEX);
+    ASSERT_EQ(bin_10_bytes, 0);
+    ASSERT_EQ(getMallocNeededSize(25), 48);
+    ASSERT_FALSE(isPointingToSelf(fast_bin_chunks[bit_10_bytes]));
+    ASSERT_EQ(fast_bin_chunks[bit_10_bytes].getNext(), chunk_1);
 }
 
 

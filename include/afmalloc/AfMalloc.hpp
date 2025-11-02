@@ -169,6 +169,9 @@ bool isChunkCoalescable(const Chunk &chunk);
  */
 std::size_t getMallocNeededSize(std::size_t size);
 
+
+std::optional<std::pair<std::size_t, std::size_t>> findBinIndex(std::size_t allocations_size);
+
 /**
  * Basic struct with arena. It contains free_size_ of the top chunk,
  * pointer to the top_ chunk, pointer to the begining of the memory block
@@ -310,6 +313,14 @@ class AfMalloc{
       return &af_arena_.unsorted_chunks_;
     }
 
+    std::vector<Chunk> &getFastBinChunks() {
+      return af_arena_.fast_chunks_;
+    }
+
+    std::vector<Chunk> &getSmallBinChunks() {
+      return af_arena_.small_chunks_;
+    }
+
     ~AfMalloc();
 
 
@@ -332,8 +343,8 @@ class AfMalloc{
       // removes this chunk from the list of free chunks
 
       Chunk *tryFindFastBinChunk(std::size_t size);
-      Chunk *tryFindSmallBinChunk(std::size_t size);
 
+      Chunk *tryFindSmallBinChunk(std::size_t size);
 
 
       void setBinIndex(std::size_t bin, std::size_t bit);
