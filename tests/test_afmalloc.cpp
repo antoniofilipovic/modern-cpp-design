@@ -277,7 +277,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfNoCoalescingFastChunks) {
 
 TEST_F(BasicAfMallocSizeAllocated, TestChunkIsMovedToTheCorrectBin) {
     // we need to trigger moving of the chunk by calling malloc after frees
-    AfMalloc af_malloc{};
+    AfMalloc af_malloc{true};
 
     void *ptr_1 = af_malloc.malloc(10);
     void *ptr_2 = af_malloc.malloc(30);
@@ -293,6 +293,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestChunkIsMovedToTheCorrectBin) {
     af_malloc.free(ptr_5);
     af_malloc.free(ptr_6);
     af_malloc.free(ptr_7);
+    af_malloc.dumpMemory();
     Chunk *unsorted_chunks = af_malloc.getUnsortedChunks();
     // This test case makes it impossible to coalesce chunks as they are allocated in between normal size chunks
     Chunk *chunk_7 = moveToThePreviousChunk(ptr_7, HEAD_OF_CHUNK_SIZE);
@@ -311,7 +312,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestChunkIsMovedToTheCorrectBin) {
     ASSERT_EQ(chunk_2->getNext(), chunk_1);
 
     // this chunk does not exist in the unsorted chunks, and we should move our chunks to the new bins
-    void *ptr_8=af_malloc.malloc(FAST_BIN_RANGE_END + 200);
+    void *ptr_8 = af_malloc.malloc(FAST_BIN_RANGE_END + 200);
 
 
     Chunk *unsorted_chunks_2 = af_malloc.getUnsortedChunks();
@@ -324,6 +325,8 @@ TEST_F(BasicAfMallocSizeAllocated, TestChunkIsMovedToTheCorrectBin) {
     ASSERT_EQ(getMallocNeededSize(25), 48);
     ASSERT_FALSE(isPointingToSelf(fast_bin_chunks[bit_10_bytes]));
     ASSERT_EQ(fast_bin_chunks[bit_10_bytes].getNext(), chunk_1);
+
+    af_malloc.free(ptr_8);
 }
 
 

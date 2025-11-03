@@ -2,6 +2,8 @@
 #include <cstdint>
 #include <bit>
 #include <bitset>
+#include <format>
+#include <unordered_map>
 #include <vector>
 
 // original malloc implementation has fastBins from 32 to 160 bytes
@@ -47,6 +49,7 @@ constexpr std::size_t BITMAP_SIZE = 32;
 constexpr std::size_t FASTBINS_INDEX = 0;
 constexpr std::size_t SMALLBINS_INDEX = 1;
 
+constexpr std::size_t NUM_SMALL_CHUNKS = (SMALL_BIN_RANGE_END - FAST_BIN_RANGE_END) / BIN_SPACING_SIZE;
 
 static_assert((SMALL_BIN_RANGE_END - FAST_BIN_RANGE_END) / BIN_SPACING_SIZE <= BITMAP_SIZE);
 
@@ -127,6 +130,15 @@ class Chunk{
     Chunk *prev_{nullptr};
     Chunk *next_{nullptr};
 };
+
+template <>
+struct std::hash<Chunk*> {
+  std::size_t operator()(const Chunk *chunk) const noexcept {
+    return std::hash<uintptr_t>{}(reinterpret_cast<uintptr_t>(chunk));
+  }
+
+};
+
 
 
 // When the chunk is allocated we store the user object from m_prev forwards
@@ -265,11 +277,15 @@ void unlinkChunk(Chunk* chunk);
 
 
 
+
 class AfMalloc{
 
   // struct which holds arena
   public:
     explicit AfMalloc();
+
+    explicit AfMalloc(bool track_pointers) ;
+
 
     /**
      * Main malloc function used for satisfying user requests
@@ -321,6 +337,26 @@ class AfMalloc{
       return af_arena_.small_chunks_;
     }
 
+    void dumpMemory();
+
+    std::string getPtrHumaneReadableName(Chunk *chunk) {
+      auto iter = name_map_.find(chunk);
+      if(iter != name_map_.end()) {
+        return iter->second;
+      }
+      auto [insert_iter, ok ] = name_map_.emplace(chunk, std::format("ptr_{}", name_map_.size()));
+      return insert_iter->second;
+    }
+
+    std::string createPtrHumaneReadableName(Chunk *chunk, std::string_view prefix) {
+      auto iter = name_map_.find(chunk);
+      if(iter != name_map_.end()) {
+        return iter->second;
+      }
+      auto [insert_iter, ok ] = name_map_.emplace(chunk, std::format("{}_{}", prefix, name_map_.size()));
+      return insert_iter->second;
+    }
+
     ~AfMalloc();
 
 
@@ -353,7 +389,17 @@ class AfMalloc{
 
       bool isBinBitIndexSet(std::size_t bin, std::size_t bit);
 
+
       AfArena af_arena_{};
+      std::unordered_map<Chunk *, std::string> name_map_{};
+      bool track_pointers_{false};
+
 };
 
 
+
+template<typename... Args>
+std::string dyna_print(std::string_view rt_fmt_str, Args&&... args)
+{
+  return std::vformat(rt_fmt_str, std::make_format_args(args...));
+}

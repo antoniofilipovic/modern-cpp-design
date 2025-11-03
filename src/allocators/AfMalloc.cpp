@@ -128,11 +128,25 @@ void AfMalloc::moveToUnsortedLargeChunks(Chunk *free_chunk) {
 }
 
 void AfMalloc::moveToFastBinsChunks(Chunk *free_chunk, std::size_t bit_index) {
+    auto &fast_bin_head = af_arena_.fast_chunks_[bit_index];
+    auto *next = fast_bin_head.getNext();
+    fast_bin_head.setNext(free_chunk);
 
+    free_chunk->setPrev(&fast_bin_head);
+    free_chunk->setNext(next);
+
+    next->setPrev(free_chunk);
 }
 
 void AfMalloc::moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index) {
+    auto &small_bin_head = af_arena_.small_chunks_[bit_index];
+    auto *next = small_bin_head.getNext();
+    small_bin_head.setNext(free_chunk);
 
+    free_chunk->setPrev(&small_bin_head);
+    free_chunk->setNext(next);
+
+    next->setPrev(free_chunk);
 }
 
 void AfMalloc::extendTopChunk(){
@@ -157,22 +171,35 @@ void unlinkChunk(Chunk* chunk) {
 
     nextChunk->setPrev(prevChunk);
     prevChunk->setNext(nextChunk);
+
+    chunk->setNext(nullptr);
+    chunk->setPrev(nullptr);
 }
 
 AfMalloc::AfMalloc() {
     init();
 }
 
+AfMalloc::AfMalloc(bool track_pointers) :track_pointers_(track_pointers) {
+    init();
+}
+
 void AfMalloc::init() {
     // TODO this should be implemented that we allocate memory with our own allocator and size
     af_arena_.fast_chunks_.resize(NUM_FAST_CHUNKS, {0, 0, nullptr, nullptr});
-    std::ranges::for_each(af_arena_.fast_chunks_, [](Chunk &chunk) {
+    std::ranges::for_each(af_arena_.fast_chunks_, [this](Chunk &chunk) {
+        if(track_pointers_) {
+            createPtrHumaneReadableName(&chunk, "fast_chunk_");
+        }
         chunk.setNext(&chunk);
         chunk.setPrev(&chunk);
     });
 
-    af_arena_.small_chunks_.resize(NUM_FAST_CHUNKS, {0, 0, nullptr, nullptr});
-    std::ranges::for_each(af_arena_.small_chunks_, [](auto &chunk) {
+    af_arena_.small_chunks_.resize(NUM_SMALL_CHUNKS, {0, 0, nullptr, nullptr});
+    std::ranges::for_each(af_arena_.small_chunks_, [this](auto &chunk) {
+        if(track_pointers_) {
+            createPtrHumaneReadableName(&chunk, "small_chunk_");
+        }
         chunk.setNext(&chunk);
         chunk.setPrev(&chunk);
     });
@@ -181,9 +208,17 @@ void AfMalloc::init() {
     af_arena_.unsorted_large_chunks_.setNext(&af_arena_.unsorted_large_chunks_);
     af_arena_.unsorted_large_chunks_.setPrev(&af_arena_.unsorted_large_chunks_);
 
+    if(track_pointers_) {
+        createPtrHumaneReadableName(&af_arena_.unsorted_large_chunks_, "unsorted_large_chunks_");
+    }
+
     af_arena_.unsorted_chunks_ = {0, 0, nullptr, nullptr};
     af_arena_.unsorted_chunks_.setNext(&af_arena_.unsorted_chunks_);
     af_arena_.unsorted_chunks_.setPrev(&af_arena_.unsorted_chunks_);
+
+    if(track_pointers_) {
+        createPtrHumaneReadableName(&af_arena_.unsorted_chunks_, "unsorted_chunks_");
+    }
 
 
     // only FAST and SMALL bin indexes live here
@@ -313,8 +348,7 @@ void AfMalloc::moveChunkToCorrectBin(Chunk *current_chunk, std::size_t needed_si
     if(!maybe_bin_index) {
         moveToUnsortedLargeChunks(current_chunk);
     }else {
-        auto [index, bit_index] = *maybe_bin_index;
-        if(index == FASTBINS_INDEX) {
+        if(auto [index, bit_index] = *maybe_bin_index; index == FASTBINS_INDEX) {
             // fast range
             moveToFastBinsChunks(current_chunk, bit_index);
         }else {
@@ -343,9 +377,10 @@ std::optional<void*> AfMalloc::findChunkFromUnsortedFreeChunks(std::size_t neede
             match = current_chunk;
             break;
         }
+        Chunk *next_chunk = current_chunk->getNext();
         unlinkChunk(current_chunk);
-        moveChunkToCorrectBin(current_chunk, needed_size);
-        current_chunk = current_chunk->getNext();
+        moveChunkToCorrectBin(current_chunk, current_chunk->getSize());
+        current_chunk = next_chunk;
     }
 
     if(match == nullptr) {
@@ -549,7 +584,9 @@ void *AfMalloc::malloc(std::size_t size) {
 
 
     auto *user_chunk = std::construct_at(static_cast<Chunk*>(user_ptr), 0, needed_size, nullptr, nullptr);
-
+    if(track_pointers_) {
+        std::cout << std::format("Created ptr: {}",getPtrHumaneReadableName(user_chunk)) << std::endl;
+    }
     af_arena_.free_size_ -=  needed_size;
     af_arena_.top_ = moveToTheNextPlaceInMem(user_chunk, needed_size);
 
@@ -559,4 +596,21 @@ void *AfMalloc::malloc(std::size_t size) {
 
 void *AfMalloc::memAlign([[maybe_unused]] std::size_t alignment, [[maybe_unused]] std::size_t size) {
     return nullptr;
+}
+
+
+
+void AfMalloc::dumpMemory() {
+    std::cout << std::format("-------Dumping unsorted chunks-------") << std::endl;
+
+    {
+        Chunk &head = af_arena_.unsorted_chunks_;
+        Chunk *start = head.getNext();
+        while(start != &head) {
+            std::cout << std::format("{}[{} {} {} {}]", getPtrHumaneReadableName(start), start->getPrevSize(), start->getSize(), getPtrHumaneReadableName(start->getNext()), getPtrHumaneReadableName(start->getPrev())) << std::endl;
+            start = start->getNext();
+        }
+    }
+
+
 }
