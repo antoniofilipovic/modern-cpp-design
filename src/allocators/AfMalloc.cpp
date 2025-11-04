@@ -189,7 +189,7 @@ void AfMalloc::init() {
     af_arena_.fast_chunks_.resize(NUM_FAST_CHUNKS, {0, 0, nullptr, nullptr});
     std::ranges::for_each(af_arena_.fast_chunks_, [this](Chunk &chunk) {
         if(track_pointers_) {
-            createPtrHumaneReadableName(&chunk, "fast_chunk_");
+            createPtrHumaneReadableName("fast_chunk_", &chunk);
         }
         chunk.setNext(&chunk);
         chunk.setPrev(&chunk);
@@ -198,7 +198,7 @@ void AfMalloc::init() {
     af_arena_.small_chunks_.resize(NUM_SMALL_CHUNKS, {0, 0, nullptr, nullptr});
     std::ranges::for_each(af_arena_.small_chunks_, [this](auto &chunk) {
         if(track_pointers_) {
-            createPtrHumaneReadableName(&chunk, "small_chunk_");
+            createPtrHumaneReadableName("small_chunk_", &chunk);
         }
         chunk.setNext(&chunk);
         chunk.setPrev(&chunk);
@@ -209,7 +209,7 @@ void AfMalloc::init() {
     af_arena_.unsorted_large_chunks_.setPrev(&af_arena_.unsorted_large_chunks_);
 
     if(track_pointers_) {
-        createPtrHumaneReadableName(&af_arena_.unsorted_large_chunks_, "unsorted_large_chunks_");
+        createPtrHumaneReadableName("unsorted_large_chunks_", &af_arena_.unsorted_large_chunks_);
     }
 
     af_arena_.unsorted_chunks_ = {0, 0, nullptr, nullptr};
@@ -217,7 +217,7 @@ void AfMalloc::init() {
     af_arena_.unsorted_chunks_.setPrev(&af_arena_.unsorted_chunks_);
 
     if(track_pointers_) {
-        createPtrHumaneReadableName(&af_arena_.unsorted_chunks_, "unsorted_chunks_");
+        createPtrHumaneReadableName("unsorted_chunks_", &af_arena_.unsorted_chunks_);
     }
 
 
@@ -585,7 +585,7 @@ void *AfMalloc::malloc(std::size_t size) {
 
     auto *user_chunk = std::construct_at(static_cast<Chunk*>(user_ptr), 0, needed_size, nullptr, nullptr);
     if(track_pointers_) {
-        std::cout << std::format("Created ptr: {}",getPtrHumaneReadableName(user_chunk)) << std::endl;
+        createPtrHumaneReadableName("ptr", user_chunk);
     }
     af_arena_.free_size_ -=  needed_size;
     af_arena_.top_ = moveToTheNextPlaceInMem(user_chunk, needed_size);
@@ -606,11 +606,55 @@ void AfMalloc::dumpMemory() {
     {
         Chunk &head = af_arena_.unsorted_chunks_;
         Chunk *start = head.getNext();
+
+        std::cout << std::format("{}[{} {} {} {}]", getPtrHumaneReadableName(&head), start->getPrevSize(), start->getSize(), getPtrHumaneReadableName(head.getNext()), getPtrHumaneReadableName(head.getPrev())) << std::endl;
         while(start != &head) {
             std::cout << std::format("{}[{} {} {} {}]", getPtrHumaneReadableName(start), start->getPrevSize(), start->getSize(), getPtrHumaneReadableName(start->getNext()), getPtrHumaneReadableName(start->getPrev())) << std::endl;
             start = start->getNext();
         }
     }
 
+    {
+        auto &fast_chunks = af_arena_.fast_chunks_;
+        std::size_t i{0};
+        for(auto &head: fast_chunks) {
+            if(!isPointingToSelf(head)) {
+                std::cout << std::format("-------FastChunk{}-------", i++) << std::endl;
+                Chunk *start = head.getNext();
 
-}
+                std::cout << std::format("{}[{} {} {} {}]", getPtrHumaneReadableName(&head), start->getPrevSize(), start->getSize(), getPtrHumaneReadableName(head.getNext()), getPtrHumaneReadableName(head.getPrev())) << std::endl;
+                while(start != &head) {
+                    std::cout << std::format("{}[{} {} {} {}]", getPtrHumaneReadableName(start), start->getPrevSize(), start->getSize(), getPtrHumaneReadableName(start->getNext()), getPtrHumaneReadableName(start->getPrev())) << std::endl;
+                    start = start->getNext();
+                }
+            }else {
+                i++;
+            }
+
+        }
+    }
+        {
+            auto &small_chunks = af_arena_.small_chunks_;
+            std::size_t i{0};
+            for(auto &head: small_chunks) {
+                if(!isPointingToSelf(head)) {
+                    std::cout << std::format("-------SmallChunk{}-------", i++) << std::endl;
+                    Chunk *start = head.getNext();
+
+                    std::cout << std::format("{}[{} {} {} {}]", getPtrHumaneReadableName(&head), start->getPrevSize(), start->getSize(), getPtrHumaneReadableName(head.getNext()), getPtrHumaneReadableName(head.getPrev())) << std::endl;
+                    while(start != &head) {
+                        std::cout << std::format("{}[{} {} {} {}]", getPtrHumaneReadableName(start), start->getPrevSize(), start->getSize(), getPtrHumaneReadableName(start->getNext()), getPtrHumaneReadableName(start->getPrev())) << std::endl;
+                        start = start->getNext();
+                    }
+                }else {
+                    i++;
+                }
+            }
+        }
+
+
+
+
+    }
+
+

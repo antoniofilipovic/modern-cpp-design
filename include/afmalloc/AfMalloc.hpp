@@ -341,19 +341,18 @@ class AfMalloc{
 
     std::string getPtrHumaneReadableName(Chunk *chunk) {
       auto iter = name_map_.find(chunk);
-      if(iter != name_map_.end()) {
-        return iter->second;
-      }
-      auto [insert_iter, ok ] = name_map_.emplace(chunk, std::format("ptr_{}", name_map_.size()));
-      return insert_iter->second;
+      assert(iter != name_map_.end());
+      return iter->second;
     }
 
-    std::string createPtrHumaneReadableName(Chunk *chunk, std::string_view prefix) {
+    std::string createPtrHumaneReadableName(std::string_view prefix, Chunk *chunk) {
       auto iter = name_map_.find(chunk);
       if(iter != name_map_.end()) {
         return iter->second;
       }
-      auto [insert_iter, ok ] = name_map_.emplace(chunk, std::format("{}_{}", prefix, name_map_.size()));
+      name_counter_[std::string{prefix}];
+
+      auto [insert_iter, ok ] = name_map_.emplace(chunk, std::format("{}_{}", prefix, name_counter_[std::string{prefix}]++));
       return insert_iter->second;
     }
 
@@ -391,7 +390,9 @@ class AfMalloc{
 
 
       AfArena af_arena_{};
+
       std::unordered_map<Chunk *, std::string> name_map_{};
+      std::unordered_map<std::string, std::size_t> name_counter_{};
       bool track_pointers_{false};
 
 };
