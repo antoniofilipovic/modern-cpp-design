@@ -552,6 +552,10 @@ TEST_F(BasicAfMallocSizeAllocated, TestFastBinSmallBinChunkReusing) {
     void *ptr_4 = af_malloc.malloc(FAST_BIN_RANGE_END*2);
     af_malloc.dumpMemory();
 
+    auto [small_bin, small_bit] = *findBinIndex(getMallocNeededSize(FAST_BIN_RANGE_END+45));
+    ASSERT_EQ(small_bin, SMALLBINS_INDEX);
+    ASSERT_EQ(small_bit, 4); // (45+8)/16 -> 3.3 -> 4
+    ASSERT_TRUE(af_malloc.isBinBitIndexSet(small_bin, small_bit));
     // this will trigger reusing fast chunk
     void *ptr_5 = af_malloc.malloc(FAST_BIN_RANGE_END+45);
     // This will trigger reusing small bin chunk

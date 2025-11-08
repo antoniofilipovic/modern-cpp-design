@@ -363,6 +363,8 @@ class AfMalloc{
 
     void extendTopChunk();
 
+  bool isBinBitIndexSet(std::size_t bin, std::size_t bit);
+
   private:
       void init();
 
@@ -386,7 +388,7 @@ class AfMalloc{
 
       void unsetBitIndex(std::size_t bin, std::size_t bit);
 
-      bool isBinBitIndexSet(std::size_t bin, std::size_t bit);
+
 
 
       AfArena af_arena_{};

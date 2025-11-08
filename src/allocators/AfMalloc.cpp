@@ -351,9 +351,11 @@ void AfMalloc::moveChunkToCorrectBin(Chunk *current_chunk, std::size_t needed_si
         if(auto [index, bit_index] = *maybe_bin_index; index == FASTBINS_INDEX) {
             // fast range
             moveToFastBinsChunks(current_chunk, bit_index);
+            setBinIndex(index, bit_index);
         }else {
             // small range
             moveToSmallBinsChunks(current_chunk, bit_index);
+            setBinIndex(index, bit_index);
         }
     }
 
@@ -457,11 +459,11 @@ Chunk *AfMalloc::tryFindFastBinChunk(const std::size_t size) {
             Chunk *match = chunk_list.getNext();
             unlinkChunk(match);
             assert(match != nullptr);
-            // Chunk *next_chunk = moveToTheNextChunk(match, match->getSize());
-            // // next chunk only knows that we are free
-            // next_chunk->unsetPrevFree();
-            // // this part of memory will be used by our chunk also, hence we need to zero the memory
-            // next_chunk->setPrevSize(0x0000);
+            Chunk *next_chunk = moveToTheNextChunk(match, match->getSize());
+            // next chunk only knows that we are free
+            next_chunk->unsetPrevFree();
+            // this part of memory will be used by our chunk also, hence we need to zero the memory
+            next_chunk->setPrevSize(0x0000);
             return match;
         }
         index++;
@@ -491,11 +493,11 @@ Chunk *AfMalloc::tryFindSmallBinChunk(std::size_t size) {
             Chunk *match  = chunk_list->getPrev();
             unlinkChunk(match);
             assert(match != nullptr);
-            // Chunk* next_chunk = moveToTheNextChunk(match, match->getSize());
-            // // next chunk only knows that we are free
-            // next_chunk->unsetPrevFree();
-            // // this part of memory will be used by our chunk also, hence we need to zero the memory
-            // next_chunk->setPrevSize(0x0000);
+            Chunk* next_chunk = moveToTheNextChunk(match, match->getSize());
+            // next chunk only knows that we are free
+            next_chunk->unsetPrevFree();
+            // this part of memory will be used by our chunk also, hence we need to zero the memory
+            next_chunk->setPrevSize(0x0000);
             return match;
         }
 
@@ -555,17 +557,17 @@ void *AfMalloc::malloc(std::size_t size) {
     }
     if(isInFastBinRange(needed_size)) {
         if(auto *chunk = tryFindFastBinChunk(needed_size)) {
-            return chunk;
+            return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
         }
     }
     if(isInSmallBinRange(needed_size)) {
         if(auto *chunk = tryFindSmallBinChunk(needed_size)) {
-            return chunk;
+            return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
         }
     }
     if(!isPointingToSelf(af_arena_.unsorted_large_chunks_)) {
         if(auto *chunk = tryFindLargeChunk(&af_arena_.unsorted_large_chunks_, needed_size)) {
-            return chunk;
+            return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
         }
     }
 
