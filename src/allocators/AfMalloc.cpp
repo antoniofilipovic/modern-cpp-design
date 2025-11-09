@@ -34,7 +34,7 @@ void* moveToThePreviousPlaceInMem(void *ptr, std::size_t size) {
     return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ptr) - size);
 }
 
-std::size_t get_alignment_size(void* ptr, std::size_t alignment) {
+std::size_t getAlignmentSize(void* ptr, std::size_t alignment) {
     const auto int_ptr = reinterpret_cast<uintptr_t>(ptr);
     const auto aligned_ptr_int = (int_ptr + (alignment - 1u)) & -alignment;
     return  aligned_ptr_int - int_ptr;
@@ -43,7 +43,7 @@ std::size_t get_alignment_size(void* ptr, std::size_t alignment) {
 }
 
 
-std::size_t get_needed_size_with_alignment(void *ptr, std::size_t alignment, std::size_t size) {
+std::size_t getNeededSizeWithAlignment(void *ptr, std::size_t alignment, std::size_t size) {
     const auto int_ptr = reinterpret_cast<uintptr_t>(ptr);
     const auto aligned_needed_ptr_int = (int_ptr +  size + (alignment - 1u)) & -alignment;
     return  aligned_needed_ptr_int - int_ptr;
@@ -585,7 +585,7 @@ void *AfMalloc::malloc(std::size_t size) {
         if(p1 == nullptr) {
             return nullptr;
         }
-        assert(get_alignment_size(p1, 4096) == 0); // page size is 4096 bytes or 4kB
+        assert(getAlignmentSize(p1, 4096) == 0); // page size is 4096 bytes or 4kB
         std::cout << "Value is rounded up on page size: " << reinterpret_cast<uint64_t>(p1) << "" << reinterpret_cast<uint64_t>(p1)/4096 << std::endl;
         af_arena_.allocated_size_ = MAX_HEAP_SIZE;
         af_arena_.begin_ = p1;
@@ -611,8 +611,43 @@ void *AfMalloc::malloc(std::size_t size) {
     return moveToTheNextPlaceInMem(user_ptr, HEAD_OF_CHUNK_SIZE);
 }
 
-void *AfMalloc::memAlign([[maybe_unused]] std::size_t alignment, [[maybe_unused]] std::size_t size) {
-    return nullptr;
+
+std::size_t getPtrDiffSize(void *ptr_1, void *ptr_2) {
+    return reinterpret_cast<uintptr_t>(ptr_2) - reinterpret_cast<uintptr_t>(ptr_1);
+}
+void *AfMalloc::memAlign(std::size_t alignment, std::size_t size) {
+    // alignment + size
+    assert(alignment % 2 == 0);
+    if(alignment % ALIGNMENT) {
+        alignment = (alignment / ALIGNMENT + 1) * ALIGNMENT; // round up to the bigger number
+    }
+
+
+    std::size_t alignmentSizeInternal = getAlignmentSize(getTop(), alignment);
+    void *top = getTop();
+    void *new_top = moveToTheNextPlaceInMem(top, alignmentSizeInternal);
+    if(getPtrDiffSize(top, new_top) < HEAD_OF_CHUNK_SIZE) {
+        new_top = moveToTheNextPlaceInMem(new_top, 1);
+        alignmentSizeInternal = getAlignmentSize(new_top, alignment);
+        new_top = moveToTheNextPlaceInMem(new_top, alignmentSizeInternal);
+        assert(getPtrDiffSize(top, new_top) > HEAD_OF_CHUNK_SIZE);
+    }
+    void *start_of_chunk = moveToThePreviousPlaceInMem(new_top, HEAD_OF_CHUNK_SIZE);
+    assert(reinterpret_cast<uintptr_t>(new_top) % alignment == 0);
+    std::size_t ptrDiffSize = reinterpret_cast<uintptr_t>(start_of_chunk) - reinterpret_cast<uintptr_t>(top);
+
+    //assert(ptrDiffSize % CHUNK_SIZE == 0);
+
+    std::size_t mallocNeededSize = getMallocNeededSize(size);
+    Chunk * chunk = std::construct_at(reinterpret_cast<Chunk*>(start_of_chunk), 0, 0, nullptr, nullptr);
+    chunk->setSize(mallocNeededSize);
+
+    if(ptrDiffSize >= CHUNK_SIZE) {
+        chunk->setPrevFree();
+        chunk->setPrevSize(ptrDiffSize);
+    }
+
+    return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
 }
 
 void AfMalloc::dumpMemory() {

@@ -579,6 +579,26 @@ TEST_F(BasicAfMallocSizeAllocated, TestFastBinSmallBinChunkReusing) {
     af_malloc.free(ptr_0);
 }
 
+
+TEST_F(BasicAfMallocSizeAllocated, TestMemAlign) {
+    AfMalloc af_malloc{};
+    void *ptr_1 = af_malloc.malloc(25);
+    Chunk *chunk_1 = moveToThePreviousChunk(ptr_1, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(chunk_1->getSize(), 48);
+
+    void *top_chunk_1 = af_malloc.getTop();
+
+    void *ptr_2 = af_malloc.memAlign(64, 25);
+    Chunk *chunk_2 = moveToThePreviousChunk(ptr_2, HEAD_OF_CHUNK_SIZE);
+
+    // wasted space of alignment on the same memory line
+    ASSERT_EQ(reinterpret_cast<uintptr_t>(chunk_2) - reinterpret_cast<uintptr_t>(top_chunk_1), 16);
+
+    ASSERT_EQ(reinterpret_cast<uintptr_t>(chunk_2) % 64, 0);
+    ASSERT_EQ(chunk_2->getSize(), 48);
+
+
+}
 TEST_F(BasicAfMallocSizeAllocated, TestMoveFromFreeChunks) {
 
 }
