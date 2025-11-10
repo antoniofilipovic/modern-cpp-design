@@ -611,14 +611,23 @@ void *AfMalloc::malloc(std::size_t size) {
     return moveToTheNextPlaceInMem(user_ptr, HEAD_OF_CHUNK_SIZE);
 }
 
-
-std::size_t getPtrDiffSize(void *ptr_1, void *ptr_2) {
-    return reinterpret_cast<uintptr_t>(ptr_2) - reinterpret_cast<uintptr_t>(ptr_1);
+/**
+ *
+ * @param second Pointer from which to reduce first
+ * @param first pointer which reduces first
+ * @return difference between second and first
+ */
+std::size_t getPtrDiffSize(void *second, void *first) {
+    return reinterpret_cast<uintptr_t>(second) - reinterpret_cast<uintptr_t>(first);
 }
+
 void *AfMalloc::memAlign(std::size_t alignment, std::size_t size) {
     // alignment + size
     assert(alignment % 2 == 0);
-    if(alignment % ALIGNMENT) {
+    // if alignment is not at least 16, reconfigure to multiple of 16, we can work with
+    // if alignment or size which we allocate for chunk is not multiple of ALIGNMENT
+    // then we will have problem allocating new chunk, it will be misaligned
+    if(alignment < ALIGNMENT || alignment % ALIGNMENT != 0) {
         alignment = (alignment / ALIGNMENT + 1) * ALIGNMENT; // round up to the bigger number
     }
 
@@ -626,26 +635,29 @@ void *AfMalloc::memAlign(std::size_t alignment, std::size_t size) {
     std::size_t alignmentSizeInternal = getAlignmentSize(getTop(), alignment);
     void *top = getTop();
     void *new_top = moveToTheNextPlaceInMem(top, alignmentSizeInternal);
-    if(getPtrDiffSize(top, new_top) < HEAD_OF_CHUNK_SIZE) {
+    // since new_top is now aligned to what user wants
+    // we need to check if have 16 bytes before to fit our HEAD_OF_CHUNK
+    if(getPtrDiffSize(new_top, top) < HEAD_OF_CHUNK_SIZE) {
         new_top = moveToTheNextPlaceInMem(new_top, 1);
         alignmentSizeInternal = getAlignmentSize(new_top, alignment);
         new_top = moveToTheNextPlaceInMem(new_top, alignmentSizeInternal);
-        assert(getPtrDiffSize(top, new_top) > HEAD_OF_CHUNK_SIZE);
+        assert(getPtrDiffSize(new_top, top) > HEAD_OF_CHUNK_SIZE);
     }
+
     void *start_of_chunk = moveToThePreviousPlaceInMem(new_top, HEAD_OF_CHUNK_SIZE);
     assert(reinterpret_cast<uintptr_t>(new_top) % alignment == 0);
-    std::size_t ptrDiffSize = reinterpret_cast<uintptr_t>(start_of_chunk) - reinterpret_cast<uintptr_t>(top);
-
-    //assert(ptrDiffSize % CHUNK_SIZE == 0);
+    std::size_t ptrDiffSize = getPtrDiffSize(new_top, top);
 
     std::size_t mallocNeededSize = getMallocNeededSize(size);
-    Chunk * chunk = std::construct_at(reinterpret_cast<Chunk*>(start_of_chunk), 0, 0, nullptr, nullptr);
+    Chunk * chunk = std::construct_at(static_cast<Chunk*>(start_of_chunk), 0, 0, nullptr, nullptr);
     chunk->setSize(mallocNeededSize);
 
     if(ptrDiffSize >= CHUNK_SIZE) {
         chunk->setPrevFree();
         chunk->setPrevSize(ptrDiffSize);
+        // move to the unsorted bin
     }
+    af_arena_.top_ = moveToTheNextPlaceInMem(start_of_chunk, mallocNeededSize);
 
     return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
 }

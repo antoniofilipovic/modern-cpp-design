@@ -582,21 +582,33 @@ TEST_F(BasicAfMallocSizeAllocated, TestFastBinSmallBinChunkReusing) {
 
 TEST_F(BasicAfMallocSizeAllocated, TestMemAlign) {
     AfMalloc af_malloc{};
+
     void *ptr_1 = af_malloc.malloc(25);
     Chunk *chunk_1 = moveToThePreviousChunk(ptr_1, HEAD_OF_CHUNK_SIZE);
     ASSERT_EQ(chunk_1->getSize(), 48);
 
     void *top_chunk_1 = af_malloc.getTop();
 
-    void *ptr_2 = af_malloc.memAlign(64, 25);
+    void *ptr_2 = af_malloc.memAlign(64, 63);
     Chunk *chunk_2 = moveToThePreviousChunk(ptr_2, HEAD_OF_CHUNK_SIZE);
 
-    // wasted space of alignment on the same memory line
-    ASSERT_EQ(reinterpret_cast<uintptr_t>(chunk_2) - reinterpret_cast<uintptr_t>(top_chunk_1), 16);
+    //
+    ASSERT_TRUE(getPtrDiffSize(ptr_2, top_chunk_1) == 16);
+    ASSERT_EQ(reinterpret_cast<uintptr_t>(chunk_2) - reinterpret_cast<uintptr_t>(top_chunk_1), 0);
 
-    ASSERT_EQ(reinterpret_cast<uintptr_t>(chunk_2) % 64, 0);
-    ASSERT_EQ(chunk_2->getSize(), 48);
+    ASSERT_EQ(reinterpret_cast<uintptr_t>(ptr_2) % 64, 0);
+    ASSERT_EQ(chunk_2->getSize(), 80);
 
+    // [0 HEAD_CHUNK_1 15][16  USER_PTR 1 47][48 HEAD_CHUNK 63][64   127][]
+    // ptr_3 can't be allocated next, as we need to fit also HEAD_OF_CHUNK space
+
+    void *top_chunk_2 = af_malloc.getTop();
+    ASSERT_EQ(getPtrDiffSize(top_chunk_2, chunk_1), 128);
+
+    ASSERT_EQ(reinterpret_cast<uintptr_t>(top_chunk_2) % 128, 0);
+
+    void *ptr_3 = af_malloc.memAlign(128, 128);
+    ASSERT_EQ(getPtrDiffSize(ptr_3, top_chunk_2), 128);
 
 }
 TEST_F(BasicAfMallocSizeAllocated, TestMoveFromFreeChunks) {

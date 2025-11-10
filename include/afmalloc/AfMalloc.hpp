@@ -174,6 +174,9 @@ void* moveToThePreviousPlaceInMem(void *ptr, std::size_t size);
 
 
 bool isChunkCoalescable(const Chunk &chunk);
+
+std::size_t getPtrDiffSize(void *second, void *first);
+
 /**
  *
  * @param size size for which to calculate how much we need to allocate
