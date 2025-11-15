@@ -232,12 +232,18 @@ void AfMalloc::init() {
 
 // That should enable merging of two chunks
 void AfMalloc::free(void *p) {
+
     // TODO detect double free -> that should be easy?
     /**
      * If chunk next to the top chunk is free, then we extend top chunk. That is why we never have
      * inside the top chunk the prev_size or isPrevFree set inside the size although there is enough space for that
     */
     auto *free_chunk = moveToThePreviousChunk(p, HEAD_OF_CHUNK_SIZE);
+    AfHeap *heap = getHeapForChunk()
+    // after we have heap we need to get arena
+    // then work with it
+    // we can get heap by doing aligning our chunk to HEAP_SIZE
+    // we know that each of our chunks in heap will be N*HEAP_SIZE + chunk_offset
 
     clearUpDataSpaceOfChunk(free_chunk);
 
@@ -545,7 +551,27 @@ bool hasElementsInList(const Chunk &list_head) {
 }
 
 
+AfArena* AfMalloc::getActiveArena() {
+    // get number active arenas
+    // get max number arenas
+    // if this is not a new thread
+    //      try to get last active arena for this thread
+    //      (this should improve locality)
+    // if there is less active arenas then we have allocated
+    //      return that one
+    //  if there is space to create one more arena
+    //        create new one and use that one
+    // lock arena and return it
+}
+
+AfHeap AfMalloc::getNewHeap() {
+    // creates a new heap with mmap memory
+    // this heap
+}
+
 void *AfMalloc::malloc(std::size_t size) {
+
+    AfArena *arena = getActiveArena();
 
     std::size_t needed_size =  getMallocNeededSize(size);
 
@@ -578,6 +604,8 @@ void *AfMalloc::malloc(std::size_t size) {
             assert(false); // unsupported case
         }
         if(af_arena_.top_ != nullptr) {
+            allocateNewHeap();
+            // now we need to put that new top is this one from this heap
             assert(false); // unsupported case with missing new heap
         }
         // allocate block of memory, I am not sure if this block is aligned on anything other than page size
@@ -599,7 +627,7 @@ void *AfMalloc::malloc(std::size_t size) {
     // what we will do is we will return to user pointer after chunk's block
     void *user_ptr = af_arena_.top_;
 
-
+    // TODO update this part so that we use std::start_lifetime_as
     auto *user_chunk = std::construct_at(static_cast<Chunk*>(user_ptr), 0, needed_size, nullptr, nullptr);
     if(track_pointers_) {
         createPtrHumaneReadableName("ptr", user_chunk);

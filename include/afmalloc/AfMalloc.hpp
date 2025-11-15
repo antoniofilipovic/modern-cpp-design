@@ -187,6 +187,17 @@ std::size_t getMallocNeededSize(std::size_t size);
 
 std::optional<std::pair<std::size_t, std::size_t>> findBinIndex(std::size_t allocations_size);
 
+struct AfArena;
+
+constexpr std::size_t HEAP_MAX_SIZE = 4096 * 32;
+struct AfHeap {
+  AfArena *arena_ptr;
+  void *memory_start{};
+};
+
+
+
+
 /**
  * Basic struct with arena. It contains free_size_ of the top chunk,
  * pointer to the top_ chunk, pointer to the begining of the memory block
@@ -202,6 +213,8 @@ std::optional<std::pair<std::size_t, std::size_t>> findBinIndex(std::size_t allo
 struct AfArena{
 
   explicit AfArena();
+
+  std::mutex arena_lock{};
 
   // begin of arena
   void *begin_{nullptr};
