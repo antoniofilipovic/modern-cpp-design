@@ -62,7 +62,6 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocGet3Chunks){
     ASSERT_EQ(total_allocated_size - af_malloc.getFreeSize(), first_ptr_usage_size);
 
     const void *first_ptr_top = af_malloc.getTop();
-    const void *first_ptr_begin = af_malloc.getBegin();
     // we expect the top to be aligned on 16 byte boundary
     ASSERT_EQ(getAlignmentSizeTest(first_ptr_top, 16), 0);
     ASSERT_EQ(getAlignmentSizeTest(ptr, 16), 0);
@@ -74,7 +73,6 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocGet3Chunks){
 
     strcpy(string_ptr, "deda");
     // begin should not change
-    ASSERT_EQ(first_ptr_begin, af_malloc.getBegin());
 
     std::size_t second_ptr_used_size = getMallocNeededSize(25);
     ASSERT_EQ(second_ptr_used_size, 48); // in the one Chunk we can fit only 24 bytes, so we need additional 16 bytes

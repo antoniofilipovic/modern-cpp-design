@@ -5,7 +5,7 @@
 #include <format>
 #include <unordered_map>
 #include <vector>
-
+#include <functional>
 // original malloc implementation has fastBins from 32 to 160 bytes
 // fast bins are 16 bytes apart
 
@@ -53,6 +53,23 @@ constexpr std::size_t NUM_SMALL_CHUNKS = (SMALL_BIN_RANGE_END - FAST_BIN_RANGE_E
 
 static_assert((SMALL_BIN_RANGE_END - FAST_BIN_RANGE_END) / BIN_SPACING_SIZE <= BITMAP_SIZE);
 
+constexpr std::size_t NUM_ARENAS_FACTOR = 1;
+constexpr std::size_t NUM_CORES = 2; // find the function which can provide correct num cores
+
+class OnScopeExit {
+  public:
+    explicit OnScopeExit (std::function<void()> func) : function_(std::move(func)) {
+
+    }
+
+    ~OnScopeExit() {
+      std::invoke(function_);
+    }
+
+  private:
+    std::function<void()> function_;
+
+};
 
 /**
  *
@@ -190,9 +207,15 @@ std::optional<std::pair<std::size_t, std::size_t>> findBinIndex(std::size_t allo
 struct AfArena;
 
 constexpr std::size_t HEAP_MAX_SIZE = 4096 * 32;
+
+
+/**
+ * Heap is linking to the previous heap.
+ * And arena is pointing to the last allocated heap
+ */
 struct AfHeap {
-  AfArena *arena_ptr;
-  void *memory_start{};
+  AfArena *arena_ptr_;
+  AfHeap *prev_heap_{};
 };
 
 
@@ -214,10 +237,7 @@ struct AfArena{
 
   explicit AfArena();
 
-  std::mutex arena_lock{};
-
-  // begin of arena
-  void *begin_{nullptr};
+  std::mutex arena_lock_{};
 
   // beginning of the rest of the memory region
   // here the free region starts
@@ -259,6 +279,11 @@ struct AfArena{
   Chunk unsorted_large_chunks_{0, 0, nullptr, nullptr};
 
 
+  AfHeap *last_heap_;
+
+  // AfArena *next_arena_;
+  //
+  // AfArena *prev_arena_;
 };
 
 // Strong type for Chunk*
@@ -324,33 +349,30 @@ class AfMalloc{
     */
     void free(void *p);
 
-    [[nodiscard]] std::size_t getFreeSize() const {
-      return af_arena_.free_size_;
+    // TODO move this methods out and fix const
+
+    [[nodiscard]] std::size_t getFreeSize(const AfArena &af_arena) const {
+      return af_arena.free_size_;
     }
 
-    [[nodiscard]] std::size_t getAllocatedSize() const {
-      return af_arena_.allocated_size_;
+    [[nodiscard]] std::size_t getAllocatedSize(const AfArena &af_arena) const {
+      return af_arena.allocated_size_;
     }
 
-    [[nodiscard]]  void * getTop() const {
-      return af_arena_.top_;
+    [[nodiscard]]  void * getTop(const AfArena &af_arena) const {
+      return af_arena.top_;
     }
 
-    [[nodiscard]] void *getBegin() const {
-      return af_arena_.begin_;
+    Chunk *getUnsortedChunks(AfArena &af_arena) {
+      return &af_arena.unsorted_chunks_;
     }
 
-
-    Chunk *getUnsortedChunks() {
-      return &af_arena_.unsorted_chunks_;
+    std::vector<Chunk> &getFastBinChunks(AfArena &af_arena) {
+      return af_arena.fast_chunks_;
     }
 
-    std::vector<Chunk> &getFastBinChunks() {
-      return af_arena_.fast_chunks_;
-    }
-
-    std::vector<Chunk> &getSmallBinChunks() {
-      return af_arena_.small_chunks_;
+    std::vector<Chunk> &getSmallBinChunks(AfArena &af_arena) {
+      return af_arena.small_chunks_;
     }
 
     void dumpMemory();
@@ -405,15 +427,22 @@ class AfMalloc{
       void unsetBitIndex(std::size_t bin, std::size_t bit);
 
 
+      bool AfMalloc::allocateNewHeap(AfArena &arena);
+
+      AfArena* getArena();
 
 
-      AfArena af_arena_{};
+      AfArena af_main_arena_{};
+      std::vector<AfArena *> arenas_{};
+
+      std::size_t max_num_arenas_{NUM_ARENAS_FACTOR * NUM_CORES};
 
       std::unordered_map<Chunk *, std::string> name_map_{};
       std::unordered_map<std::string, std::size_t> name_counter_{};
       bool track_pointers_{false};
 
 };
+
 
 
 
