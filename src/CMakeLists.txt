@@ -29,3 +29,8 @@ target_link_libraries(custom_allocator allocators)
 add_executable(afmalloc_playground afmalloc_playground.cpp)
 target_include_directories(afmalloc_playground PUBLIC ../include/afmalloc)
 target_link_libraries(afmalloc_playground afmalloc)
+
+
+# Memory paper: single-threaded sequential access & working set size benchmark
+add_executable(mem_sequential memory_sequential_access.cpp)
+target_compile_options(mem_sequential PRIVATE -O2)
