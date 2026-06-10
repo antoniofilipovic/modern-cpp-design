@@ -34,12 +34,16 @@ void* moveToThePreviousPlaceInMem(void *ptr, std::size_t size) {
     return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ptr) - size);
 }
 
-std::size_t getAlignmentSize(void* ptr, std::size_t alignment) {
-    const auto int_ptr = reinterpret_cast<uintptr_t>(ptr);
-    const auto aligned_ptr_int = (int_ptr + (alignment - 1u)) & -alignment;
-    return  aligned_ptr_int - int_ptr;
-    /// -alignment what is does is it creates a number which is  000010000  ->  111011111 + 1 -> 11100000  111111010000
-    /// if ptr is aligned on something other than 16, when you add 15 it will move it to the next alignment slot
+
+
+
+
+
+
+void* moveToTheNextPlaceInMemAlignment(void *ptr, std::size_t size, std::size_t alignment) {
+    auto *new_place =  reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ptr) + size);
+    auto additional_alignment_movement = getAlignmentSize(new_place, alignment);
+    return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(new_place) + additional_alignment_movement);
 }
 
 
@@ -110,8 +114,50 @@ bool isChunkCoalescable(const Chunk &chunk) {
 }
 
 
-AfArena::AfArena() : bin_indexes_(2) {
+AfArena::AfArena() : bin_indexes_(2), last_heap_(nullptr) {
     // TODO eat own dog food for bin indexes?
+
+    initializeAfArena();
+}
+
+void AfArena::initializeAfArena() {
+    fast_chunks_.resize(NUM_FAST_CHUNKS, {0, 0, nullptr, nullptr});
+    std::ranges::for_each(fast_chunks_, [this](Chunk &chunk) {
+        if(getGlobalConfig().isTrackingGlobal) {
+            //createPtrHumaneReadableName("fast_chunk_", &chunk);
+        }
+        chunk.setNext(&chunk);
+        chunk.setPrev(&chunk);
+    });
+
+    small_chunks_.resize(NUM_SMALL_CHUNKS, {0, 0, nullptr, nullptr});
+    std::ranges::for_each(small_chunks_, [this](auto &chunk) {
+        // if(globalConfig.isTrackingGlobal) {
+        //     //createPtrHumaneReadableName("small_chunk_", &chunk);
+        // }
+        chunk.setNext(&chunk);
+        chunk.setPrev(&chunk);
+    });
+    // Set chunks to point to itself
+    unsorted_large_chunks_ = {0, 0, nullptr, nullptr};
+    unsorted_large_chunks_.setNext(&unsorted_large_chunks_);
+    unsorted_large_chunks_.setPrev(&unsorted_large_chunks_);
+
+    // if(globalConfig.isTrackingGlobal) {
+    //     //createPtrHumaneReadableName("unsorted_large_chunks_", &af_main_arena_.unsorted_large_chunks_);
+    // }
+
+    unsorted_chunks_ = {0, 0, nullptr, nullptr};
+    unsorted_chunks_.setNext(&unsorted_chunks_);
+    unsorted_chunks_.setPrev(&unsorted_chunks_);
+
+    // if(globalConfig.isTrackingGlobal) {
+    //     //createPtrHumaneReadableName("unsorted_chunks_", &unsorted_chunks_);
+    // }
+
+
+    // only FAST and SMALL bin indexes live here
+    bin_indexes_.resize(2, {0});
 }
 
 
@@ -149,8 +195,8 @@ void AfMalloc::moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index) {
     next->setPrev(free_chunk);
 }
 
-void AfMalloc::extendTopChunk(){
-    auto *top_chunk = static_cast<Chunk *>(getTop());
+void AfMalloc::extendTopChunk(AfArena *arena){
+    auto *top_chunk = static_cast<Chunk *>(arena->getTop());
     assert(top_chunk->isPrevFree());
     Chunk *prev_chunk = moveToThePreviousChunk(top_chunk, top_chunk->getPrevSize());
     assert(prev_chunk->getNext() == nullptr && prev_chunk->getPrev() == nullptr);
@@ -186,43 +232,10 @@ AfMalloc::AfMalloc(bool track_pointers) :track_pointers_(track_pointers) {
 
 void AfMalloc::init() {
     // TODO this should be implemented that we allocate memory with our own allocator and size
-    af_main_arena_.fast_chunks_.resize(NUM_FAST_CHUNKS, {0, 0, nullptr, nullptr});
-    std::ranges::for_each(af_main_arena_.fast_chunks_, [this](Chunk &chunk) {
-        if(track_pointers_) {
-            createPtrHumaneReadableName("fast_chunk_", &chunk);
-        }
-        chunk.setNext(&chunk);
-        chunk.setPrev(&chunk);
-    });
-
-    af_main_arena_.small_chunks_.resize(NUM_SMALL_CHUNKS, {0, 0, nullptr, nullptr});
-    std::ranges::for_each(af_main_arena_.small_chunks_, [this](auto &chunk) {
-        if(track_pointers_) {
-            createPtrHumaneReadableName("small_chunk_", &chunk);
-        }
-        chunk.setNext(&chunk);
-        chunk.setPrev(&chunk);
-    });
-    // Set chunks to point to itself
-    af_main_arena_.unsorted_large_chunks_ = {0, 0, nullptr, nullptr};
-    af_main_arena_.unsorted_large_chunks_.setNext(&af_main_arena_.unsorted_large_chunks_);
-    af_main_arena_.unsorted_large_chunks_.setPrev(&af_main_arena_.unsorted_large_chunks_);
-
-    if(track_pointers_) {
-        createPtrHumaneReadableName("unsorted_large_chunks_", &af_main_arena_.unsorted_large_chunks_);
+    for (int i = 0; i < 2; i++) {
+        arenas_.emplace_back(std::make_unique<AfArena>());
     }
 
-    af_main_arena_.unsorted_chunks_ = {0, 0, nullptr, nullptr};
-    af_main_arena_.unsorted_chunks_.setNext(&af_main_arena_.unsorted_chunks_);
-    af_main_arena_.unsorted_chunks_.setPrev(&af_main_arena_.unsorted_chunks_);
-
-    if(track_pointers_) {
-        createPtrHumaneReadableName("unsorted_chunks_", &af_main_arena_.unsorted_chunks_);
-    }
-
-
-    // only FAST and SMALL bin indexes live here
-    af_main_arena_.bin_indexes_.resize(2, {0});
 
 }
 
@@ -239,7 +252,10 @@ void AfMalloc::free(void *p) {
      * inside the top chunk the prev_size or isPrevFree set inside the size although there is enough space for that
     */
     auto *free_chunk = moveToThePreviousChunk(p, HEAD_OF_CHUNK_SIZE);
-    AfHeap *heap = getHeapForChunk()
+    AfHeap *heap = getHeapAddress(p);
+
+    AfArena *arena = heap->arena_ptr_;
+
     // after we have heap we need to get arena
     // then work with it
     // we can get heap by doing aligning our chunk to HEAP_SIZE
@@ -307,22 +323,22 @@ void AfMalloc::free(void *p) {
     }else {
         if(isChunkCoalescable(*free_chunk)) {
             // next chunk here is arena.top_
-            assert(next_chunk == af_main_arena_.top_);
+            assert(next_chunk == arena->top_);
             // in this part of code we extend top to the free_chunk
             // this means we can't add free chunk to the free list
-            static_cast<Chunk*>(af_main_arena_.top_)->setPrevFree();
-            static_cast<Chunk*>(af_main_arena_.top_)->setPrevSize(free_chunk->getSize());
+            static_cast<Chunk*>(arena->top_)->setPrevFree();
+            static_cast<Chunk*>(arena->top_)->setPrevSize(free_chunk->getSize());
             // here we should actually merge our chunk with the top, and that way we have extended the unlimited free chunk
-            extendTopChunk();
+            extendTopChunk(arena);
             // We have extended the top, the rest of the code deals with adding the chunk to the unsorted chunks
             return;
         }else {
-            static_cast<Chunk*>(af_main_arena_.top_)->setPrevSize(free_chunk->getSize());
+            static_cast<Chunk*>(arena->top_)->setPrevSize(free_chunk->getSize());
         }
     }
 
     // We append to the top of the list newly freed chunk
-    Chunk *head_chunk = &af_main_arena_.unsorted_chunks_;
+    Chunk *head_chunk = &arena->unsorted_chunks_;
     if(isPointingToSelf(*head_chunk)) {
         head_chunk->setNext(free_chunk);
         head_chunk->setPrev(free_chunk);
@@ -345,7 +361,7 @@ AfMalloc::~AfMalloc() {
     if(af_main_arena_.free_size_ != af_main_arena_.allocated_size_) {
         std::cout << "leaking memory" << std::endl;
     }
-    munmap(af_main_arena_.begin_, af_main_arena_.allocated_size_);
+    //munmap(af_main_arena_.begin_, af_main_arena_.allocated_size_);
 }
 
 void AfMalloc::moveChunkToCorrectBin(Chunk *current_chunk, std::size_t needed_size) {
@@ -546,6 +562,7 @@ bool isPointingToSelf(const Chunk &list_head) {
     return list_head.getPrev() == &list_head && list_head.getNext() == &list_head;
 }
 
+// TODO rename
 bool hasElementsInList(const Chunk &list_head) {
     return !isPointingToSelf(list_head);
 }
@@ -562,35 +579,28 @@ AfArena* AfMalloc::getArena() {
     //  if there is space to create one more arena
     //        create new one and use that one
     // lock arena and return it
+    if (getGlobalConfig().disableRoundRobin) {
+        return arenas_[0].get();
+    }
 
-    for(auto &arena: arenas_) {
-        // check how to wrap this with lock guard or something
-        if(arena->arena_lock_.try_lock()) {
-            return arena;
-        }
-    }
-    if(max_num_arenas_ < arenas_.size()) {
-        // construct new arena and provide it back
-    }
-    return nullptr;
+    const auto arena_index = next_arena_.fetch_add(1) % arenas_.size();
+    auto &arena = arenas_[arena_index];
+    return arena.get();
 }
 
 bool AfMalloc::allocateNewHeap(AfArena &arena) {
-    // creates a new heap with mmap memory
-    // this heap
-
-
-    AfHeap *last_heap = arena.last_heap_;
-
     void *p1 = MMAP (nullptr, MAX_HEAP_SIZE, PROT_READ | PROT_WRITE, MAP_POPULATE);
     if(p1 == nullptr) {
-        return nullptr;
+        return false;
     }
+
     assert(getAlignmentSize(p1, 4096) == 0); // page size is 4096 bytes or 4kB
 
     // https://www.youtube.com/watch?v=pbkQG09grFw start lifetime as vs bit_Cast?
-    AfHeap *heap = std::construct_at();
-    arena.last_heap_ = p1;
+    auto *heap = std::construct_at(static_cast<AfHeap*>(p1), MAX_HEAP_SIZE, &arena, arena.last_heap_);
+    arena.last_heap_ = heap;
+
+    return true;
 }
 
 void *AfMalloc::malloc(std::size_t size) {
@@ -600,11 +610,10 @@ void *AfMalloc::malloc(std::size_t size) {
         assert(false);
     }
 
-    auto &af_arena = *maybe_arena;
 
-    OnScopeExit on_scope_exit{[&af_arena]() {
-        af_arena.arena_lock_.unlock();
-    }};
+    auto &af_arena = *maybe_arena;
+    std::unique_lock lock(af_arena.arena_lock_);
+
 
     std::size_t needed_size =  getMallocNeededSize(size);
 
@@ -614,16 +623,19 @@ void *AfMalloc::malloc(std::size_t size) {
             return *maybe_chunk;
         }
     }
+
     if(isInFastBinRange(needed_size)) {
         if(auto *chunk = tryFindFastBinChunk(needed_size)) {
             return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
         }
     }
+
     if(isInSmallBinRange(needed_size)) {
         if(auto *chunk = tryFindSmallBinChunk(needed_size)) {
             return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
         }
     }
+
     if(!isPointingToSelf(af_arena.unsorted_large_chunks_)) {
         if(auto *chunk = tryFindLargeChunk(&af_arena.unsorted_large_chunks_, needed_size)) {
             return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
@@ -632,27 +644,29 @@ void *AfMalloc::malloc(std::size_t size) {
 
     // if there are no free chunks, and we have no enough size, we need to allocate a new block
     // If there is less then HEAD_OF_CHUNK_SIZE left, we need to
-    if(static_cast<long>(af_arena.free_size_) - static_cast<long>(HEAD_OF_CHUNK_SIZE) < static_cast<long>(needed_size)) {
+
+    // If we don't have enough size, ask from heap to allocate it
+    if(af_arena.free_size_  < needed_size + TOP_CHUNK_NEEDED_SIZE) {
         if(needed_size > MAX_HEAP_SIZE) {
             assert(false); // unsupported case
         }
+        // TODO allocate new heap
         if(af_arena.top_ != nullptr) {
-            if(!allocateNewHeap(af_arena)) {
-                assert(false); // unsupported case with missing new heap
-            }
-            // now we need to put that new top is this one from this heap
+            // TODO how do we behave if there is only some small amount of memory left
+            // We probably want to try to make a
+            // usable free chunk out of it?
+        }
 
+        if(!allocateNewHeap(af_arena)) {
+            assert(false); // unsupported case with missing new heap
         }
-        // allocate block of memory, I am not sure if this block is aligned on anything other than page size
-        void *p1 = MMAP (nullptr, MAX_HEAP_SIZE, PROT_READ | PROT_WRITE, MAP_POPULATE);
-        if(p1 == nullptr) {
-            return nullptr;
-        }
-        assert(getAlignmentSize(p1, 4096) == 0); // page size is 4096 bytes or 4kB
-        std::cout << "Value is rounded up on page size: " << reinterpret_cast<uint64_t>(p1) << "" << reinterpret_cast<uint64_t>(p1)/4096 << std::endl;
-        af_arena.allocated_size_ = MAX_HEAP_SIZE;
-        af_arena.top_= p1;
-        af_arena.free_size_ = MAX_HEAP_SIZE;
+        af_arena.top_ = moveToTheNextPlaceInMemAlignment(af_arena.last_heap_, sizeof(AfHeap), ALIGNMENT);
+        af_arena.allocated_size_ += af_arena.last_heap_->heap_size_;
+
+        // now we need to put that new top is this one from this heap
+
+        // free size is size of heap - memory needed for heap object - alignment needed to get to the ALIGNMENT
+        af_arena.free_size_ = af_arena.last_heap_->heap_size_ - getAlignmentSize(moveToTheNextPlaceInMem(af_arena.last_heap_, sizeof(AfHeap)), ALIGNMENT) - sizeof(AfHeap);
     }
 
     // We can store anything which has alignment of 16 bytes.
@@ -684,6 +698,8 @@ std::size_t getPtrDiffSize(void *second, void *first) {
 }
 
 void *AfMalloc::memAlign(std::size_t alignment, std::size_t size) {
+    assert(false);
+
     // alignment + size
     assert(alignment % 2 == 0);
     // if alignment is not at least 16, reconfigure to multiple of 16, we can work with
@@ -694,8 +710,10 @@ void *AfMalloc::memAlign(std::size_t alignment, std::size_t size) {
     }
 
 
-    std::size_t alignmentSizeInternal = getAlignmentSize(getTop(), alignment);
-    void *top = getTop();
+    //std::size_t alignmentSizeInternal = getAlignmentSize(getTop(), alignment);
+    std::size_t alignmentSizeInternal{0};
+    void *top{nullptr};
+    //void *top = getTop();
     void *new_top = moveToTheNextPlaceInMem(top, alignmentSizeInternal);
     // since new_top is now aligned to what user wants
     // we need to check if have 16 bytes before to fit our HEAD_OF_CHUNK

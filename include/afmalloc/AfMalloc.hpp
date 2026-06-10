@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <bit>
 #include <bitset>
@@ -6,6 +7,22 @@
 #include <unordered_map>
 #include <vector>
 #include <functional>
+#include <mutex>
+
+
+struct GlobalConfig {
+  bool isTrackingGlobal{false};
+  bool disableRoundRobin{false};
+};
+
+
+inline GlobalConfig& getGlobalConfig() {
+  static GlobalConfig globalConfig{};
+  return globalConfig;
+}
+
+
+
 // original malloc implementation has fastBins from 32 to 160 bytes
 // fast bins are 16 bytes apart
 
@@ -37,6 +54,7 @@ constexpr std::size_t ALIGNMENT_MASK = ALIGNMENT - 1;
 
 
 static std::size_t HEAD_OF_CHUNK_SIZE = 16;
+static std::size_t TOP_CHUNK_NEEDED_SIZE = 16;
 
 constexpr std::size_t FAST_BIN_RANGE_START = 16;
 constexpr std::size_t FAST_BIN_RANGE_END = 160;
@@ -204,9 +222,7 @@ std::size_t getMallocNeededSize(std::size_t size);
 
 std::optional<std::pair<std::size_t, std::size_t>> findBinIndex(std::size_t allocations_size);
 
-struct AfArena;
-
-constexpr std::size_t HEAP_MAX_SIZE = 4096 * 32;
+class AfArena;
 
 
 /**
@@ -214,11 +230,36 @@ constexpr std::size_t HEAP_MAX_SIZE = 4096 * 32;
  * And arena is pointing to the last allocated heap
  */
 struct AfHeap {
+  std::size_t heap_size_{0};
   AfArena *arena_ptr_;
   AfHeap *prev_heap_{};
+
 };
+static_assert(sizeof(AfHeap) == 24, "Expected size of AfHeap to be 24");
+static_assert(alignof(AfHeap) == 8, "Expected size of AfHeap to be 8");
 
 
+
+/**
+ * Returns how many bytes are we misaligned
+ * @param ptr
+ * @param alignment
+ * @return
+ */
+inline std::size_t getAlignmentSize(void* ptr, std::size_t alignment) {
+  const auto int_ptr = reinterpret_cast<uintptr_t>(ptr);
+  const auto aligned_ptr_int = (int_ptr + (alignment - 1u)) & -alignment;
+  return  aligned_ptr_int - int_ptr;
+  /// -alignment what is does is it creates a number which is  000010000  ->  111011111 + 1 -> 11100000  111111010000
+  /// if ptr is aligned on something other than 16, when you add 15 it will move it to the next alignment slot
+}
+
+inline AfHeap *getHeapAddress(void *p) {
+  auto missAlignment = getAlignmentSize(p, 4096);
+  auto base = reinterpret_cast<uintptr_t>(p) - (4096 - missAlignment);
+
+  return std::bit_cast<AfHeap *>(reinterpret_cast<uintptr_t>(p) &  ~MAX_HEAP_SIZE);
+}
 
 
 /**
@@ -233,9 +274,20 @@ struct AfHeap {
  * FIFO should give the equal opportunity to each chunk to be reused, and then consolidated, thus reducing
  * fragmentation. LIFO is done only since I don't care here about fragmentation and such long lived programs.
  */
-struct AfArena{
+class AfArena{
 
-  explicit AfArena();
+public:
+
+
+  AfArena();
+
+
+
+  //AfArena(const AfArena &) = delete;
+
+  //AfArena(AfArena &&other) = delete;
+
+  void initializeAfArena();
 
   std::mutex arena_lock_{};
 
@@ -279,11 +331,21 @@ struct AfArena{
   Chunk unsorted_large_chunks_{0, 0, nullptr, nullptr};
 
 
-  AfHeap *last_heap_;
+  AfHeap *last_heap_{nullptr};
 
   // AfArena *next_arena_;
   //
   // AfArena *prev_arena_;
+
+  [[nodiscard]] std::size_t getFreeSize() const {
+    return free_size_;
+  }
+
+
+  [[nodiscard]]  void * getTop() const {
+    return top_;
+  }
+
 };
 
 // Strong type for Chunk*
@@ -351,17 +413,12 @@ class AfMalloc{
 
     // TODO move this methods out and fix const
 
-    [[nodiscard]] std::size_t getFreeSize(const AfArena &af_arena) const {
-      return af_arena.free_size_;
-    }
 
     [[nodiscard]] std::size_t getAllocatedSize(const AfArena &af_arena) const {
       return af_arena.allocated_size_;
     }
 
-    [[nodiscard]]  void * getTop(const AfArena &af_arena) const {
-      return af_arena.top_;
-    }
+
 
     Chunk *getUnsortedChunks(AfArena &af_arena) {
       return &af_arena.unsorted_chunks_;
@@ -399,7 +456,7 @@ class AfMalloc{
 
     void printArenasMemory() {}
 
-    void extendTopChunk();
+    void extendTopChunk(AfArena *arena);
 
   bool isBinBitIndexSet(std::size_t bin, std::size_t bit);
 
@@ -426,14 +483,28 @@ class AfMalloc{
 
       void unsetBitIndex(std::size_t bin, std::size_t bit);
 
-
-      bool AfMalloc::allocateNewHeap(AfArena &arena);
+    /**
+     * Method allocateNewHeap does the following
+     *  1. In case there is no heap at all allocated, it creates a new heap and links it to arena
+     *  2. In case there is old heap which does not have enough memory for new allocation, it creates a new heap
+     *  and links the old heap to the new one
+     *  3. TODO From the old heap it chunks the data and moves it to the freeChunk list
+     *
+     *
+     * @param arena
+     * @return
+     */
+      bool allocateNewHeap(AfArena &arena);
 
       AfArena* getArena();
 
 
       AfArena af_main_arena_{};
-      std::vector<AfArena *> arenas_{};
+
+      std::vector<std::unique_ptr<AfArena>> arenas_{};
+      // https://www.reddit.com/r/ProgrammerTIL/comments/4tspsn/c_it_will_take_approximately_97_years_to_overflow/
+      // if my program is running and doing allocation every 1 cpu cycle it will overflow in 97 years
+      std::atomic<uint64_t> next_arena_{0};
 
       std::size_t max_num_arenas_{NUM_ARENAS_FACTOR * NUM_CORES};
 
