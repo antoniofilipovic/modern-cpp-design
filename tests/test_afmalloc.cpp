@@ -52,23 +52,27 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocGet3Chunks){
     // spill over to the next neighboring chunk
     getGlobalConfig().disableRoundRobin = true;
 
-    const std::size_t total_allocated_size = 32 * 4096; // 32 pages == 128kB
+    const std::size_t total_allocated_size = MAX_HEAP_SIZE;
+    constexpr std::size_t heap_alignment_size = ALIGNMENT - sizeof(AfHeap);
+
     AfMalloc af_malloc{};
 
     void *ptr = af_malloc.malloc(10);
     char *first_str = reinterpret_cast<char *>(ptr);
     strcpy(first_str, "baba");
-    const std::size_t first_ptr_usage_size = 32;
+    constexpr std::size_t first_ptr_usage_size = 32;
     ASSERT_EQ(first_ptr_usage_size, getMallocNeededSize(10));
     AfHeap *heap = getHeapAddress(ptr);
+    ASSERT_TRUE(heap != nullptr);
     AfArena *arena = heap->arena_ptr_;
+    ASSERT_TRUE(arena != nullptr);
 
-    ASSERT_EQ(total_allocated_size - arena->getFreeSize(), first_ptr_usage_size);
+    ASSERT_EQ(total_allocated_size - arena->getFreeSize() - sizeof(AfHeap) - heap_alignment_size, first_ptr_usage_size);
 
     const void *first_ptr_top = arena->getTop();
     // we expect the top to be aligned on 16 byte boundary
-    ASSERT_EQ(getAlignmentSizeTest(first_ptr_top, 16), 0);
-    ASSERT_EQ(getAlignmentSizeTest(ptr, 16), 0);
+    ASSERT_EQ(getAlignmentSizeTest(first_ptr_top, ALIGNMENT), 0);
+    ASSERT_EQ(getAlignmentSizeTest(ptr, ALIGNMENT), 0);
 
     ////////////////////////////////////// second ptr allocation /////////////////
 
@@ -95,12 +99,50 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocGet3Chunks){
     strcpy(third_str, "deda");
 
     ASSERT_EQ(0, getAlignmentSizeTest(second_top, ALIGNMENT));
+}
+
+TEST_F(BasicAfMallocSizeAllocated, TestFree) {
+    // On freeing chunks from last to the first we should append to the top
+    // when chunks are bigger than fast bin chunks
+
+    getGlobalConfig().disableRoundRobin = true;
+
+    AfMalloc af_malloc{};
+    constexpr std::size_t first_chunk_size = 170;
+    constexpr std::size_t second_chunk_size = 185;
+    constexpr std::size_t third_chunk_size = 195;
+
+    void *ptr = af_malloc.malloc(first_chunk_size);
+    void *second_ptr = af_malloc.malloc(second_chunk_size);
+    void *third_ptr = af_malloc.malloc(third_chunk_size);
 
 
+    AfHeap *heap = getHeapAddress(ptr);
+    ASSERT_TRUE(heap != nullptr);
+    AfArena *arena = heap->arena_ptr_;
+    ASSERT_TRUE(arena != nullptr);
 
-    //af_malloc.free(ptr);
-    //af_malloc.free(second_ptr);
-    //af_malloc.free(third_ptr);
+
+    void *top = arena->getTop();
+
+    af_malloc.free(third_ptr);
+
+    void *top_after_free = arena->getTop();
+    ASSERT_EQ(getMallocNeededSize(third_chunk_size), 208);
+    void *expected_new_top = moveToThePreviousPlaceInMem(top, getMallocNeededSize(third_chunk_size));
+    ASSERT_EQ(expected_new_top, top_after_free);
+
+    af_malloc.free(second_ptr);
+    top_after_free = arena->getTop();
+    expected_new_top = moveToThePreviousPlaceInMem(expected_new_top, getMallocNeededSize(second_chunk_size));
+    ASSERT_EQ(expected_new_top, top_after_free);
+
+    af_malloc.free(ptr);
+    top_after_free = arena->getTop();
+    expected_new_top = moveToThePreviousPlaceInMem(expected_new_top, getMallocNeededSize(first_chunk_size));
+
+    ASSERT_EQ(expected_new_top, top_after_free);
+
 
 }
 
@@ -192,6 +234,8 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocGet3Chunks){
 // }
 //
 //
+
+
 // TEST_F(BasicAfMallocSizeAllocated, TestAfNoCoalescingFastChunks) {
 //     // We want to write the size in the prev size
 //     // how that should behave for top_chunk
@@ -275,6 +319,8 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocGet3Chunks){
 //     ASSERT_EQ(*third_chunk, (Chunk{48,  48, third_free_chunk_list, second_chunk}));
 //
 // }
+
+
 //
 //
 // TEST_F(BasicAfMallocSizeAllocated, TestChunkIsMovedToTheCorrectBin) {

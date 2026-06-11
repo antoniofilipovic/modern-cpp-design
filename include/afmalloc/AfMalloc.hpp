@@ -33,21 +33,19 @@ inline GlobalConfig& getGlobalConfig() {
 // fastchunks are not consolidated otherwise
 
 static_assert(std::endian::native == std::endian::little);
-// Change with log level
-constexpr bool TRACKING{false};
 
 
+const std::size_t PAGE_SIZE = sysconf(_SC_PAGESIZE);
 constexpr std::size_t SIZE_OF_SIZE = sizeof(std::size_t);
 static_assert(SIZE_OF_SIZE == 8);
 
 // How we mark that previous is inuse
 // 63 may come out of random, but it is sizeof(std::size_t) * CHAR_NUM_BITS - 1
 static std::size_t PREV_FREE = 1ul << 63;
-
 static std::size_t EMPTY_FLAG = 0ul;
 
 // 32 pages, or 128kB
-constexpr std::size_t MAX_HEAP_SIZE = 32*4096;
+const std::size_t MAX_HEAP_SIZE = 32*PAGE_SIZE;
 
 constexpr std::size_t ALIGNMENT = 2 * SIZE_OF_SIZE;
 constexpr std::size_t ALIGNMENT_MASK = ALIGNMENT - 1;
@@ -255,10 +253,13 @@ inline std::size_t getAlignmentSize(void* ptr, std::size_t alignment) {
 }
 
 inline AfHeap *getHeapAddress(void *p) {
-  auto missAlignment = getAlignmentSize(p, 4096);
-  auto base = reinterpret_cast<uintptr_t>(p) - (4096 - missAlignment);
-
-  return std::bit_cast<AfHeap *>(reinterpret_cast<uintptr_t>(p) &  ~MAX_HEAP_SIZE);
+  // We guarantee that heap address is allocated on 32 page boundary
+  // Hence here we divide
+  auto missAlignment = getAlignmentSize(p, MAX_HEAP_SIZE);
+  auto base = reinterpret_cast<uintptr_t>(p) - (MAX_HEAP_SIZE - missAlignment);
+  //
+  assert((reinterpret_cast<uintptr_t>(p) & (~MAX_HEAP_SIZE + 1)) == base);
+  return std::bit_cast<AfHeap *>(base);
 }
 
 
@@ -345,6 +346,32 @@ public:
   [[nodiscard]]  void * getTop() const {
     return top_;
   }
+
+
+  void extendTopChunk();
+
+
+  void* findChunkFromUnsortedFreeChunks(std::size_t size);
+
+  void moveChunkToCorrectBin(Chunk *current_chunk, std::size_t size);
+
+  void moveToUnsortedLargeChunks(Chunk *free_chunk);
+
+  void moveToFastBinsChunks(Chunk *free_chunk, std::size_t bit_index);
+
+  void moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index);
+
+  Chunk *tryFindFastBinChunk(std::size_t size);
+
+  Chunk *tryFindSmallBinChunk(std::size_t size);
+
+
+  void setBinIndex(std::size_t bin, std::size_t bit);
+
+  void unsetBitIndex(std::size_t bin, std::size_t bit);
+
+  bool isBinBitIndexSet(std::size_t bin, std::size_t bit);
+
 
 };
 
@@ -456,32 +483,16 @@ class AfMalloc{
 
     void printArenasMemory() {}
 
-    void extendTopChunk(AfArena *arena);
 
-  bool isBinBitIndexSet(std::size_t bin, std::size_t bit);
+
+
 
   private:
       void init();
 
-      std::optional<void*> findChunkFromUnsortedFreeChunks(std::size_t size);
 
-      void moveChunkToCorrectBin(Chunk *current_chunk, std::size_t size);
-
-      void moveToUnsortedLargeChunks(Chunk *free_chunk);
-
-      void moveToFastBinsChunks(Chunk *free_chunk, std::size_t bit_index);
-
-      void moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index);
       // removes this chunk from the list of free chunks
 
-      Chunk *tryFindFastBinChunk(std::size_t size);
-
-      Chunk *tryFindSmallBinChunk(std::size_t size);
-
-
-      void setBinIndex(std::size_t bin, std::size_t bit);
-
-      void unsetBitIndex(std::size_t bin, std::size_t bit);
 
     /**
      * Method allocateNewHeap does the following
@@ -498,8 +509,6 @@ class AfMalloc{
 
       AfArena* getArena();
 
-
-      AfArena af_main_arena_{};
 
       std::vector<std::unique_ptr<AfArena>> arenas_{};
       // https://www.reddit.com/r/ProgrammerTIL/comments/4tspsn/c_it_will_take_approximately_97_years_to_overflow/
