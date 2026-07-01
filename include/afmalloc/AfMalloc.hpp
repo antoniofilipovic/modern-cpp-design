@@ -252,6 +252,11 @@ inline std::size_t getAlignmentSize(void* ptr, std::size_t alignment) {
   /// if ptr is aligned on something other than 16, when you add 15 it will move it to the next alignment slot
 }
 
+inline std::size_t getAlignmentSize(uintptr_t value, std::size_t alignment) {
+  const auto aligned_ptr_int = (value + (alignment - 1u)) & -alignment;
+  return  aligned_ptr_int - value;
+}
+
 inline AfHeap *getHeapAddress(void *p) {
   // We guarantee that heap address is allocated on 32 page boundary
   // Hence here we divide
@@ -373,6 +378,17 @@ public:
   bool isBinBitIndexSet(std::size_t bin, std::size_t bit);
 
 
+  Chunk *getUnsortedChunks() {
+    return &unsorted_chunks_;
+  }
+
+  std::vector<Chunk> &getFastBinChunks() {
+    return fast_chunks_;
+  }
+
+  std::vector<Chunk> &getSmallBinChunks() {
+    return small_chunks_;
+  }
 };
 
 // Strong type for Chunk*
@@ -447,17 +463,7 @@ class AfMalloc{
 
 
 
-    Chunk *getUnsortedChunks(AfArena &af_arena) {
-      return &af_arena.unsorted_chunks_;
-    }
 
-    std::vector<Chunk> &getFastBinChunks(AfArena &af_arena) {
-      return af_arena.fast_chunks_;
-    }
-
-    std::vector<Chunk> &getSmallBinChunks(AfArena &af_arena) {
-      return af_arena.small_chunks_;
-    }
 
     void dumpMemory();
 

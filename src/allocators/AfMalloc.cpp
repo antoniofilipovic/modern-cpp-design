@@ -315,7 +315,6 @@ void AfMalloc::free(void *p) {
         free_chunk->setSize(free_chunk->getSize() + next_chunk->getSize());
 
         unlinkChunk(next_chunk);
-        // TODO add destroy at
         //std::destroy_at<Chunk>(next_chunk);
 
         clearUpDataSpaceOfChunk(free_chunk);
