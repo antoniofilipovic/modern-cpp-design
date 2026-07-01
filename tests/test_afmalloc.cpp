@@ -30,9 +30,17 @@ bool isChunkMetadataCorrect(const Chunk &chunk, std::size_t prev_size, std::size
     return chunk.getSize() == size && chunk.getPrevSize() == prev_size && chunk.getFlags() == flags;
 }
 
+// Tests the case when we have only one arena
 class BasicAfMallocSizeAllocated : public ::testing::Test {
 public:
     BasicAfMallocSizeAllocated() = default;
+
+    void SetUp() override {
+        getGlobalConfig().disableRoundRobin = true;
+    }
+    void TearDown() override {
+        getGlobalConfig().disableRoundRobin = false;
+    }
 
 
     AfArena* verifyAndGetArena(void *ptr) {
@@ -40,6 +48,17 @@ public:
         assert(heap != nullptr);
         AfArena *arena = heap->arena_ptr_;
         assert(arena != nullptr); // todo check why not assert true
+        return arena;
+    }
+    template <typename ...Args>
+    AfArena* verifyAndGetArenaForPointers(Args&& ...args) {
+        AfArena *arena = verifyAndGetArena(args...[0]);
+        ([&]
+        {
+            assert(arena == verifyAndGetArena(args));
+
+        } (), ...);
+
         return arena;
     }
 };
@@ -504,199 +523,220 @@ TEST_F(BasicAfMallocSizeAllocated, TestChunkIsMovedToTheCorrectBin) {
 }
 
 
-//
-// TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3ChunksLIFO) {
-//     // allocate 1, 2, 3
-//     // free 3, 2, 1
-//     // 3 should be top of free chunks, then 2 then 1
-//     // we should properly coalasce them
-//
-//     AfMalloc af_malloc{};
-//
-//     void *ptr = af_malloc.malloc(FAST_BIN_RANGE_END+10);
-//     Chunk *first_chunk = moveToThePreviousChunk(ptr, HEAD_OF_CHUNK_SIZE);
-//     ASSERT_EQ(*first_chunk, (Chunk{0, FAST_BIN_RANGE_END+32, nullptr, nullptr}));
-//
-//     char *first_str = static_cast<char *>(ptr);
-//     strcpy(first_str, "lala");
-//
-//     void *second_ptr = af_malloc.malloc(FAST_BIN_RANGE_END+25);
-//     Chunk *second_chunk = moveToThePreviousChunk(second_ptr, HEAD_OF_CHUNK_SIZE);
-//     ASSERT_EQ(*second_chunk, (Chunk{0, FAST_BIN_RANGE_END+48, nullptr, nullptr}));
-//
-//
-//     char *string_ptr = static_cast<char *>(second_ptr);
-//     strcpy(string_ptr, "po");
-//
-//
-//     void *third_ptr = af_malloc.malloc(FAST_BIN_RANGE_END+35);
-//     Chunk *third_chunk = moveToThePreviousChunk(third_ptr, HEAD_OF_CHUNK_SIZE);
-//     ASSERT_EQ(*third_chunk, (Chunk{0, FAST_BIN_RANGE_END+48, nullptr, nullptr}));
-//
-//     auto *third_str = static_cast<char *>(third_ptr);
-//     strcpy(third_str, "gagorago");
-//
-//     char emptyBuffer[sizeof(Chunk)]{};
-//     // should be equal
-//
-//     // Now we should see that we merge them again
-//     af_malloc.free(third_ptr);
-//     Chunk *free_chunk_list = af_malloc.getUnsortedChunks();
-//     ASSERT_TRUE(isPointingToSelf(*free_chunk_list));
-//     // Assert top has moved to the third chunk
-//     ASSERT_EQ(third_chunk, af_malloc.getTop());
-//     ASSERT_EQ(memcmp(&emptyBuffer, third_chunk, sizeof(Chunk)), 0);
-//
-//
-//     af_malloc.free(second_ptr);
-//     free_chunk_list = af_malloc.getUnsortedChunks();
-//
-//     ASSERT_TRUE(isPointingToSelf(*free_chunk_list));
-//     ASSERT_EQ(second_chunk, af_malloc.getTop());
-//     ASSERT_EQ(memcmp(&emptyBuffer, second_chunk, sizeof(Chunk)), 0);
-//
-//
-//
-//     af_malloc.free(ptr);
-//
-//     free_chunk_list = af_malloc.getUnsortedChunks();
-//     ASSERT_TRUE(isPointingToSelf(*free_chunk_list));
-//
-//     ASSERT_EQ(first_chunk, af_malloc.getTop());
-//     ASSERT_EQ(memcmp(&emptyBuffer, first_chunk, sizeof(Chunk)), 0);
-//
-// }
-//
-//
-// TEST_F(BasicAfMallocSizeAllocated, TestReusingFreedChunks) {
-//     AfMalloc af_malloc{};
-//
-//     void *ptr = af_malloc.malloc(10);
-//     Chunk *first_chunk = moveToThePreviousChunk(ptr, HEAD_OF_CHUNK_SIZE);
-//     ASSERT_EQ(first_chunk->getSize(), 32);
-//     void *second_ptr = af_malloc.malloc(10);
-//     Chunk *second_chunk = moveToThePreviousChunk(second_ptr, HEAD_OF_CHUNK_SIZE);
-//     ASSERT_EQ(second_chunk->getSize(), 32);
-//     void *third_ptr = af_malloc.malloc(25);
-//     Chunk *third_chunk = moveToThePreviousChunk(third_ptr, HEAD_OF_CHUNK_SIZE);
-//     ASSERT_EQ(third_chunk->getSize(), 48);
-//
-//     af_malloc.free(second_ptr);
-//     void *fourth_ptr = af_malloc.malloc(10);
-//
-//     Chunk *fourth_chunk = moveToThePreviousChunk(fourth_ptr, HEAD_OF_CHUNK_SIZE);
-//     ASSERT_EQ(second_chunk, fourth_chunk);
-// }
-//
-// TEST_F(BasicAfMallocSizeAllocated, TestReusingRecentlyFreedChunk) {
-//     AfMalloc af_malloc{};
-//
-//     auto *ptr_0 = af_malloc.malloc(25);
-//     Chunk *chunk_0 = moveToThePreviousChunk(ptr_0, HEAD_OF_CHUNK_SIZE);
-//     auto *ptr_1 = af_malloc.malloc(50);
-//     Chunk *chunk_1 = moveToThePreviousChunk(ptr_1, HEAD_OF_CHUNK_SIZE);
-//
-//     auto *ptr_2 = af_malloc.malloc(45);
-//     Chunk *chunk_2 = moveToThePreviousChunk(ptr_2, HEAD_OF_CHUNK_SIZE);
-//
-//     auto *ptr_3 = af_malloc.malloc(60);
-//     Chunk *chunk_3 = moveToThePreviousChunk(ptr_3, HEAD_OF_CHUNK_SIZE);
-//
-//     af_malloc.free(ptr_2);
-//     af_malloc.free(ptr_0);
-//
-//     ASSERT_EQ(chunk_0->getSize(), 48);
-//     // this means that we can't coalesce
-//     ASSERT_EQ(chunk_1->isPrevFree(), false);
-//     ASSERT_EQ(chunk_1->getPrevSize(), 48);
-//
-//     ASSERT_EQ(chunk_2->getSize(), 64);
-//     // this means that we can't coalesce
-//     ASSERT_EQ(chunk_3->isPrevFree(), false);
-//     ASSERT_EQ(chunk_3->getPrevSize(), 64); // means we can coalesce later and it is free!
-//
-//     ASSERT_EQ(af_malloc.getUnsortedChunks()->getNext(), chunk_0);
-//
-//     void *ptr_4 = af_malloc.malloc(10);
-//     ASSERT_EQ(ptr_4, ptr_0);
-//     void *ptr_5 = af_malloc.malloc(44);
-//     ASSERT_EQ(ptr_5, ptr_2);
-//
-//     ASSERT_TRUE(isPointingToSelf(*af_malloc.getUnsortedChunks()));
-//
-//     ASSERT_EQ(chunk_0->getSize(), 48);
-//     ASSERT_EQ(chunk_1->isPrevFree(), false);
-//     ASSERT_EQ(chunk_1->getPrevSize(), 0);
-//
-//     ASSERT_EQ(chunk_2->getSize(), 64);
-//     ASSERT_EQ(chunk_3->isPrevFree(), false);
-//     ASSERT_EQ(chunk_3->getPrevSize(), 0);
-//
-//     af_malloc.free(ptr_0);
-// }
-//
-//
-// TEST_F(BasicAfMallocSizeAllocated, TestFastBinSmallBinChunkReusing) {
-//     AfMalloc af_malloc{true};
-//
-//     auto *ptr_0 = af_malloc.malloc(25);
-//     Chunk *chunk_0 = moveToThePreviousChunk(ptr_0, HEAD_OF_CHUNK_SIZE);
-//     auto *ptr_1 = af_malloc.malloc(50);
-//     Chunk *chunk_1 = moveToThePreviousChunk(ptr_1, HEAD_OF_CHUNK_SIZE);
-//
-//     auto *ptr_2 = af_malloc.malloc(FAST_BIN_RANGE_END+45);
-//     Chunk *chunk_2 = moveToThePreviousChunk(ptr_2, HEAD_OF_CHUNK_SIZE);
-//
-//     auto *ptr_3 = af_malloc.malloc(60);
-//     Chunk *chunk_3 = moveToThePreviousChunk(ptr_3, HEAD_OF_CHUNK_SIZE);
-//
-//     af_malloc.free(ptr_2);
-//     af_malloc.free(ptr_0);
-//
-//     ASSERT_EQ(chunk_0->getSize(), 48);
-//     // this means that we can't coalesce
-//     ASSERT_EQ(chunk_1->isPrevFree(), false);
-//     ASSERT_EQ(chunk_1->getPrevSize(), 48);
-//
-//     ASSERT_EQ(chunk_2->getSize(), 224);
-//     // this means that we can coalesce -> small bin chunk
-//     ASSERT_EQ(chunk_3->isPrevFree(), true);
-//     ASSERT_EQ(chunk_3->getPrevSize(), 224); // means we can coalesce later and it is free!
-//
-//     ASSERT_EQ(af_malloc.getUnsortedChunks()->getNext(), chunk_0);
-//
-//     // This malloc will trigger moving chunks from unsorted to specific lists
-//     void *ptr_4 = af_malloc.malloc(FAST_BIN_RANGE_END*2);
-//     af_malloc.dumpMemory();
-//
-//     auto [small_bin, small_bit] = *findBinIndex(getMallocNeededSize(FAST_BIN_RANGE_END+45));
-//     ASSERT_EQ(small_bin, SMALLBINS_INDEX);
-//     ASSERT_EQ(small_bit, 4); // (45+8)/16 -> 3.3 -> 4
-//     ASSERT_TRUE(af_malloc.isBinBitIndexSet(small_bin, small_bit));
-//     // this will trigger reusing fast chunk
-//     void *ptr_5 = af_malloc.malloc(FAST_BIN_RANGE_END+45);
-//     // This will trigger reusing small bin chunk
-//     void *ptr_6 = af_malloc.malloc(25);
-//     af_malloc.dumpMemory();
-//     ASSERT_EQ(ptr_5, ptr_2);
-//     ASSERT_EQ(ptr_6, ptr_0);
-//
-//     ASSERT_TRUE(isPointingToSelf(*af_malloc.getUnsortedChunks()));
-//
-//     ASSERT_EQ(chunk_0->getSize(), 48);
-//     // these flags should be cleared
-//     ASSERT_EQ(chunk_1->isPrevFree(), false);
-//     ASSERT_EQ(chunk_1->getPrevSize(), 0);
-//
-//     ASSERT_EQ(chunk_2->getSize(), 224);
-//     // these flags should be cleared now
-//     ASSERT_EQ(chunk_3->isPrevFree(), false);
-//     ASSERT_EQ(chunk_3->getPrevSize(), 0);
-//
-//     af_malloc.free(ptr_0);
-// }
-//
-//
+
+TEST_F(BasicAfMallocSizeAllocated, TestAfMallocCoalasce3ChunksLIFO) {
+    // allocate 1, 2, 3
+    // free 3, 2, 1
+    // 3 should be top of free chunks, then 2 then 1
+    // we should properly coalasce them
+
+    AfMalloc af_malloc{};
+
+    void *ptr = af_malloc.malloc(FAST_BIN_RANGE_END+10);
+    Chunk *first_chunk = moveToThePreviousChunk(ptr, HEAD_OF_CHUNK_SIZE);
+
+    ASSERT_EQ(*first_chunk, (Chunk{0, FAST_BIN_RANGE_END+32, nullptr, nullptr}));
+
+    char *first_str = static_cast<char *>(ptr);
+    strcpy(first_str, "lala");
+
+    void *second_ptr = af_malloc.malloc(FAST_BIN_RANGE_END+25);
+    Chunk *second_chunk = moveToThePreviousChunk(second_ptr, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(*second_chunk, (Chunk{0, FAST_BIN_RANGE_END+48, nullptr, nullptr}));
+
+
+    char *string_ptr = static_cast<char *>(second_ptr);
+    strcpy(string_ptr, "po");
+
+
+    void *third_ptr = af_malloc.malloc(FAST_BIN_RANGE_END+35);
+    Chunk *third_chunk = moveToThePreviousChunk(third_ptr, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(*third_chunk, (Chunk{0, FAST_BIN_RANGE_END+48, nullptr, nullptr}));
+
+    auto *third_str = static_cast<char *>(third_ptr);
+    strcpy(third_str, "gagorago");
+
+    char emptyBuffer[sizeof(Chunk)]{};
+    // should be equal
+
+    // Now we should see that we merge them again
+    af_malloc.free(third_ptr);
+    AfArena *arena = verifyAndGetArena(third_ptr);
+
+    ASSERT_EQ(verifyAndGetArena(first_chunk), verifyAndGetArena(second_chunk));
+    ASSERT_EQ(verifyAndGetArena(third_chunk), verifyAndGetArena(first_chunk));
+
+    Chunk *free_chunk_list = arena->getUnsortedChunks();
+
+    ASSERT_TRUE(isPointingToSelf(*free_chunk_list));
+    // Assert top has moved to the third chunk
+    ASSERT_EQ(third_chunk, arena->getTop());
+    ASSERT_EQ(memcmp(&emptyBuffer, third_chunk, sizeof(Chunk)), 0);
+
+
+    af_malloc.free(second_ptr);
+    free_chunk_list = arena->getUnsortedChunks();
+
+    ASSERT_TRUE(isPointingToSelf(*free_chunk_list));
+    ASSERT_EQ(second_chunk, arena->getTop());
+    ASSERT_EQ(memcmp(&emptyBuffer, second_chunk, sizeof(Chunk)), 0);
+
+
+
+    af_malloc.free(ptr);
+
+    free_chunk_list = arena->getUnsortedChunks();
+    ASSERT_TRUE(isPointingToSelf(*free_chunk_list));
+
+    ASSERT_EQ(first_chunk, arena->getTop());
+    ASSERT_EQ(memcmp(&emptyBuffer, first_chunk, sizeof(Chunk)), 0);
+
+}
+
+
+TEST_F(BasicAfMallocSizeAllocated, TestReusingFreedChunks) {
+    // The idea behind af malloc is reuse also freed memory
+    // We can have some free space and we want to reuse it
+    AfMalloc af_malloc{};
+
+    void *ptr = af_malloc.malloc(10);
+    Chunk *first_chunk = moveToThePreviousChunk(ptr, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(first_chunk->getSize(), 32);
+
+    void *second_ptr = af_malloc.malloc(10);
+    Chunk *second_chunk = moveToThePreviousChunk(second_ptr, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(second_chunk->getSize(), 32);
+
+    void *third_ptr = af_malloc.malloc(25);
+    Chunk *third_chunk = moveToThePreviousChunk(third_ptr, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(third_chunk->getSize(), 48);
+
+
+    af_malloc.free(second_ptr);
+
+    void *fourth_ptr = af_malloc.malloc(10);
+    Chunk *fourth_chunk = moveToThePreviousChunk(fourth_ptr, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(second_chunk, fourth_chunk);
+
+}
+
+
+TEST_F(BasicAfMallocSizeAllocated, TestReusingRecentlyFreedChunk) {
+    // Tests case of reusing recently freed chunk
+
+    AfMalloc af_malloc{};
+
+    auto *ptr_0 = af_malloc.malloc(25);
+    Chunk *chunk_0 = moveToThePreviousChunk(ptr_0, HEAD_OF_CHUNK_SIZE);
+    auto *ptr_1 = af_malloc.malloc(50);
+    Chunk *chunk_1 = moveToThePreviousChunk(ptr_1, HEAD_OF_CHUNK_SIZE);
+
+    auto *ptr_2 = af_malloc.malloc(45);
+    Chunk *chunk_2 = moveToThePreviousChunk(ptr_2, HEAD_OF_CHUNK_SIZE);
+
+    auto *ptr_3 = af_malloc.malloc(60);
+    Chunk *chunk_3 = moveToThePreviousChunk(ptr_3, HEAD_OF_CHUNK_SIZE);
+
+    AfArena *arena = verifyAndGetArenaForPointers(ptr_0, ptr_1, ptr_2, ptr_3);
+
+    af_malloc.free(ptr_2);
+    af_malloc.free(ptr_0);
+
+    ASSERT_EQ(chunk_0->getSize(), 48);
+    // this means that we can't coalesce
+    ASSERT_EQ(chunk_1->isPrevFree(), false);
+    ASSERT_EQ(chunk_1->getPrevSize(), 48);
+
+    ASSERT_EQ(chunk_2->getSize(), 64);
+    // this means that we can't coalesce
+    ASSERT_EQ(chunk_3->isPrevFree(), false);
+    ASSERT_EQ(chunk_3->getPrevSize(), 64); // means we can coalesce later and it is free!
+
+    ASSERT_EQ(arena->getUnsortedChunks()->getNext(), chunk_0);
+
+    void *ptr_4 = af_malloc.malloc(10);
+    ASSERT_EQ(ptr_4, ptr_0);
+    void *ptr_5 = af_malloc.malloc(44);
+    ASSERT_EQ(ptr_5, ptr_2);
+
+    ASSERT_TRUE(isPointingToSelf(*arena->getUnsortedChunks()));
+
+    ASSERT_EQ(chunk_0->getSize(), 48);
+    ASSERT_EQ(chunk_1->isPrevFree(), false);
+    ASSERT_EQ(chunk_1->getPrevSize(), 0);
+
+    ASSERT_EQ(chunk_2->getSize(), 64);
+    ASSERT_EQ(chunk_3->isPrevFree(), false);
+    ASSERT_EQ(chunk_3->getPrevSize(), 0);
+
+    af_malloc.free(ptr_0);
+}
+
+
+TEST_F(BasicAfMallocSizeAllocated, TestFastBinSmallBinChunkReusing) {
+    AfMalloc af_malloc{true};
+
+    auto *ptr_0 = af_malloc.malloc(25);
+    Chunk *chunk_0 = moveToThePreviousChunk(ptr_0, HEAD_OF_CHUNK_SIZE);
+    auto *ptr_1 = af_malloc.malloc(50);
+    Chunk *chunk_1 = moveToThePreviousChunk(ptr_1, HEAD_OF_CHUNK_SIZE);
+
+    auto *ptr_2 = af_malloc.malloc(FAST_BIN_RANGE_END+45);
+    Chunk *chunk_2 = moveToThePreviousChunk(ptr_2, HEAD_OF_CHUNK_SIZE);
+
+    auto *ptr_3 = af_malloc.malloc(60);
+    Chunk *chunk_3 = moveToThePreviousChunk(ptr_3, HEAD_OF_CHUNK_SIZE);
+
+    AfArena *arena = verifyAndGetArenaForPointers(ptr_0, ptr_1, ptr_2, ptr_3);
+
+
+    af_malloc.free(ptr_2);
+    af_malloc.free(ptr_0);
+
+    ASSERT_EQ(chunk_0->getSize(), 48);
+    // this means that we can't coalesce
+    ASSERT_EQ(chunk_1->isPrevFree(), false);
+    ASSERT_EQ(chunk_1->getPrevSize(), 48);
+
+    ASSERT_EQ(chunk_2->getSize(), 224);
+    // this means that we can coalesce -> small bin chunk
+    ASSERT_EQ(chunk_3->isPrevFree(), true);
+    ASSERT_EQ(chunk_3->getPrevSize(), 224); // means we can coalesce later and it is free!
+
+    ASSERT_EQ(arena->getUnsortedChunks()->getNext(), chunk_0);
+
+    // This malloc will trigger moving chunks from unsorted to specific lists
+    void *ptr_4 = af_malloc.malloc(FAST_BIN_RANGE_END*2);
+    af_malloc.dumpMemory();
+
+    auto [small_bin, small_bit] = *findBinIndex(getMallocNeededSize(FAST_BIN_RANGE_END+45));
+    ASSERT_EQ(small_bin, SMALLBINS_INDEX);
+    ASSERT_EQ(small_bit, 4); // (45+8)/16 -> 3.3 -> 4
+    ASSERT_TRUE(arena->isBinBitIndexSet(small_bin, small_bit));
+    // this will trigger reusing fast chunk
+    void *ptr_5 = af_malloc.malloc(FAST_BIN_RANGE_END+45);
+    // This will trigger reusing small bin chunk
+    void *ptr_6 = af_malloc.malloc(25);
+    af_malloc.dumpMemory();
+    ASSERT_EQ(ptr_5, ptr_2);
+    ASSERT_EQ(ptr_6, ptr_0);
+
+    ASSERT_TRUE(isPointingToSelf(*arena->getUnsortedChunks()));
+
+    ASSERT_EQ(chunk_0->getSize(), 48);
+    // these flags should be cleared
+    ASSERT_EQ(chunk_1->isPrevFree(), false);
+    ASSERT_EQ(chunk_1->getPrevSize(), 0);
+
+    ASSERT_EQ(chunk_2->getSize(), 224);
+    // these flags should be cleared now
+    ASSERT_EQ(chunk_3->isPrevFree(), false);
+    ASSERT_EQ(chunk_3->getPrevSize(), 0);
+
+    af_malloc.free(ptr_0);
+}
+
+
 // TEST_F(BasicAfMallocSizeAllocated, TestMemAlign) {
 //     AfMalloc af_malloc{};
 //
