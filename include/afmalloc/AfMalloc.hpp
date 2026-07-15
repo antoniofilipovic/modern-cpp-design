@@ -8,6 +8,7 @@
 #include <vector>
 #include <functional>
 #include <mutex>
+#include <type_traits>
 
 
 struct GlobalConfig {
@@ -52,7 +53,7 @@ constexpr std::size_t ALIGNMENT_MASK = ALIGNMENT - 1;
 
 
 static std::size_t HEAD_OF_CHUNK_SIZE = 16;
-static std::size_t TOP_CHUNK_NEEDED_SIZE = 16;
+
 
 constexpr std::size_t FAST_BIN_RANGE_START = 16;
 constexpr std::size_t FAST_BIN_RANGE_END = 160;
@@ -172,6 +173,10 @@ struct std::hash<Chunk*> {
 
 };
 
+static_assert(std::is_implicit_lifetime_v<Chunk>);
+
+
+
 
 
 // When the chunk is allocated we store the user object from m_prev forwards
@@ -195,11 +200,12 @@ struct std::hash<Chunk*> {
 static_assert(sizeof(Chunk) == 32, "Expected size of chunk to be 32");
 static_assert(alignof(Chunk) == 8);
 constexpr std::size_t CHUNK_SIZE = sizeof(Chunk);
+constexpr std::size_t TOP_CHUNK_NEEDED_SIZE = CHUNK_SIZE;
 
 
-Chunk *moveToThePreviousChunk(void *ptr, std::size_t size);
+Chunk *getChunkPointerBefore(void *ptr, std::size_t size);
 
-Chunk *moveToTheNextChunk(void *ptr, std::size_t size);
+Chunk *getChunkPointerAfter(void *ptr, std::size_t size);
 
 void* moveToTheNextPlaceInMem(void *ptr, std::size_t size);
 
@@ -229,13 +235,15 @@ class AfArena;
  */
 struct AfHeap {
   std::size_t heap_size_{0};
-  AfArena *arena_ptr_;
+  AfArena *arena_ptr_{nullptr};
   AfHeap *prev_heap_{};
-
 };
+
 static_assert(sizeof(AfHeap) == 24, "Expected size of AfHeap to be 24");
 static_assert(alignof(AfHeap) == 8, "Expected size of AfHeap to be 8");
 
+
+static_assert(std::is_implicit_lifetime_v<AfHeap>);
 
 
 /**
@@ -262,9 +270,10 @@ inline AfHeap *getHeapAddress(void *p) {
   // Hence here we divide
   auto missAlignment = getAlignmentSize(p, MAX_HEAP_SIZE);
   auto base = reinterpret_cast<uintptr_t>(p) - (MAX_HEAP_SIZE - missAlignment);
-  //
   assert((reinterpret_cast<uintptr_t>(p) & (~MAX_HEAP_SIZE + 1)) == base);
-  return std::bit_cast<AfHeap *>(base);
+  /// heap already exists so calling std::start_lifetime_as is not good solution, right
+  /// // std::launder or start_lifetime_as
+  return std::launder(reinterpret_cast<AfHeap *>(base));
 }
 
 
@@ -278,22 +287,84 @@ inline AfHeap *getHeapAddress(void *p) {
  *
  * For the unsorted_chunks_ I am doing LIFO, whereas malloc does FIFO.
  * FIFO should give the equal opportunity to each chunk to be reused, and then consolidated, thus reducing
- * fragmentation. LIFO is done only since I don't care here about fragmentation and such long lived programs.
+ * fragmentation.
+ * LIFO is done only since I don't care here about fragmentation and such long lived programs.
  */
+// TODO replace std::vector usage with custom memory solution
 class AfArena{
 
 public:
 
-
   AfArena();
 
-
-
-  //AfArena(const AfArena &) = delete;
-
-  //AfArena(AfArena &&other) = delete;
-
   void initializeAfArena();
+
+
+
+  // AfArena *next_arena_;
+  //
+  // AfArena *prev_arena_;
+
+  [[nodiscard]] std::size_t getFreeSize() const {
+    return free_size_;
+  }
+
+
+  [[nodiscard]]  void * getTop() const {
+    return top_;
+  }
+
+
+  void extendTopChunk();
+
+
+  void* findChunkFromUnsortedFreeChunks(std::size_t size);
+
+  void moveChunkToCorrectBin(Chunk *current_chunk, std::size_t size);
+
+  void moveToUnsortedLargeChunks(Chunk *free_chunk);
+
+  void moveToFastBinsChunks(Chunk *free_chunk, std::size_t bit_index);
+
+  void moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index);
+
+  Chunk *tryFindFastBinChunk(std::size_t size);
+
+  Chunk *tryFindSmallBinChunk(std::size_t size);
+
+
+  void setBinIndex(std::size_t bin, std::size_t bit);
+
+  void unsetBitIndex(std::size_t bin, std::size_t bit);
+
+  bool isBinBitIndexSet(std::size_t bin, std::size_t bit);
+
+
+  /**
+  * Allocate with the user requested alignment, of at least size bytes
+  * @param alignment
+  * @param size
+  * @return
+  */
+  void *memAlign(std::size_t alignment, std::size_t size);
+
+  void linkChunkToUnsortedChunks(Chunk *chunk);
+
+
+  Chunk *getUnsortedChunks() {
+    return &unsorted_chunks_;
+  }
+
+  std::vector<Chunk> &getFastBinChunks() {
+    return fast_chunks_;
+  }
+
+  std::vector<Chunk> &getSmallBinChunks() {
+    return small_chunks_;
+  }
+
+
+  // move to private
 
   std::mutex arena_lock_{};
 
@@ -339,56 +410,11 @@ public:
 
   AfHeap *last_heap_{nullptr};
 
-  // AfArena *next_arena_;
-  //
-  // AfArena *prev_arena_;
+  AfHeap* setupHeap(void *heap);
 
-  [[nodiscard]] std::size_t getFreeSize() const {
-    return free_size_;
-  }
+  bool isTopChunk(Chunk *chunk);
 
 
-  [[nodiscard]]  void * getTop() const {
-    return top_;
-  }
-
-
-  void extendTopChunk();
-
-
-  void* findChunkFromUnsortedFreeChunks(std::size_t size);
-
-  void moveChunkToCorrectBin(Chunk *current_chunk, std::size_t size);
-
-  void moveToUnsortedLargeChunks(Chunk *free_chunk);
-
-  void moveToFastBinsChunks(Chunk *free_chunk, std::size_t bit_index);
-
-  void moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index);
-
-  Chunk *tryFindFastBinChunk(std::size_t size);
-
-  Chunk *tryFindSmallBinChunk(std::size_t size);
-
-
-  void setBinIndex(std::size_t bin, std::size_t bit);
-
-  void unsetBitIndex(std::size_t bin, std::size_t bit);
-
-  bool isBinBitIndexSet(std::size_t bin, std::size_t bit);
-
-
-  Chunk *getUnsortedChunks() {
-    return &unsorted_chunks_;
-  }
-
-  std::vector<Chunk> &getFastBinChunks() {
-    return fast_chunks_;
-  }
-
-  std::vector<Chunk> &getSmallBinChunks() {
-    return small_chunks_;
-  }
 };
 
 // Strong type for Chunk*
@@ -440,13 +466,7 @@ class AfMalloc{
     */
     void *malloc(std::size_t size);
 
-  /**
-   * Allocate with the user requested alignment, of at least size bytes
-   * @param alignment
-   * @param size
-   * @return
-   */
-  void *memAlign(std::size_t alignment, std::size_t size);
+
 
     /**
       *
@@ -461,7 +481,13 @@ class AfMalloc{
       return af_arena.allocated_size_;
     }
 
-
+    /**
+    * Allocate with the user requested alignment, of at least size bytes
+    * @param alignment
+    * @param size
+    * @return
+    */
+    void *memAlign(std::size_t alignment, std::size_t size);
 
 
 
@@ -484,14 +510,9 @@ class AfMalloc{
       return insert_iter->second;
     }
 
-    ~AfMalloc();
-
-
     void printArenasMemory() {}
 
-
-
-
+    ~AfMalloc();
 
   private:
       void init();
@@ -507,13 +528,12 @@ class AfMalloc{
      *  and links the old heap to the new one
      *  3. TODO From the old heap it chunks the data and moves it to the freeChunk list
      *
-     *
-     * @param arena
+
      * @return
      */
-      bool allocateNewHeap(AfArena &arena);
+      void* allocateNewHeap();
 
-      AfArena* getArena();
+      AfArena& getArena();
 
 
       std::vector<std::unique_ptr<AfArena>> arenas_{};

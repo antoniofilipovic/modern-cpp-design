@@ -9,6 +9,7 @@
 
 #include "AfMalloc.hpp"
 
+#include <numeric>
 #include <sys/mman.h>
 
 #define MMAP(addr, size, prot, flags) \
@@ -18,13 +19,8 @@
 static_assert(sizeof(long long int) == 8);
 
 
-Chunk *moveToThePreviousChunk(void *ptr, std::size_t size) {
-    return reinterpret_cast<Chunk *>(reinterpret_cast<uintptr_t>(ptr) - size);
-}
 
-Chunk *moveToTheNextChunk(void *ptr, std::size_t size) {
-    return reinterpret_cast<Chunk *>(reinterpret_cast<uintptr_t>(ptr) + size);
-}
+
 
 void* moveToTheNextPlaceInMem(void *ptr, std::size_t size) {
     return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ptr) + size);
@@ -35,7 +31,13 @@ void* moveToThePreviousPlaceInMem(void *ptr, std::size_t size) {
 }
 
 
+Chunk *getChunkPointerBefore(void *ptr, std::size_t size) {
+    return std::launder(reinterpret_cast<Chunk*>(reinterpret_cast<uintptr_t>(ptr) - size));
+}
 
+Chunk *getChunkPointerAfter(void *ptr, std::size_t size) {
+    return std::launder(reinterpret_cast<Chunk*>(reinterpret_cast<uintptr_t>(ptr) + size));
+}
 
 
 
@@ -105,6 +107,17 @@ std::size_t getMallocNeededSize(std::size_t size) {
     ///
     ///
     return (size + SIZE_OF_SIZE + ALIGNMENT_MASK) & ~ALIGNMENT_MASK;
+}
+
+
+std::size_t getMallocNeededSize(const std::size_t size, const std::size_t alignment) {
+    assert(alignment % ALIGNMENT == 0);
+    if (size + SIZE_OF_SIZE <= CHUNK_SIZE) {
+        return CHUNK_SIZE;
+    }
+    const auto alignmentMask = alignment - 1;
+
+    return (size + SIZE_OF_SIZE + alignmentMask) & ~alignmentMask;
 }
 
 
@@ -215,14 +228,16 @@ void AfArena::moveToSmallBinsChunks(Chunk *free_chunk, std::size_t bit_index) {
 }
 
 void AfArena::extendTopChunk(){
-    auto *top_chunk = static_cast<Chunk *>(getTop());
+    auto *top_chunk = reinterpret_cast<Chunk *>(getTop());
     assert(top_chunk->isPrevFree());
-    Chunk *prev_chunk = moveToThePreviousChunk(top_chunk, top_chunk->getPrevSize());
-    assert(prev_chunk->getNext() == nullptr && prev_chunk->getPrev() == nullptr);
-    clearUpDataSpaceOfChunk(prev_chunk);
-    top_ = prev_chunk;
+    Chunk *prev_chunk = getChunkPointerBefore(top_chunk, top_chunk->getPrevSize());
+
+    prev_chunk->setSize(top_chunk->getSize() + prev_chunk->getSize());
     prev_chunk->unsetPrevFree();
-    prev_chunk->setSize(0);
+
+    top_ = prev_chunk;
+    // is this good usage of start of lifetime of chunk
+    clearUpDataSpaceOfChunk(top_chunk);
 }
 
 void unlinkChunk(Chunk* chunk) {
@@ -249,6 +264,10 @@ AfMalloc::AfMalloc(bool track_pointers) :track_pointers_(track_pointers) {
     init();
 }
 
+bool AfArena::isTopChunk(Chunk *chunk) {
+    return std::addressof(*std::launder(reinterpret_cast<Chunk*>(top_))) == std::addressof(*chunk);
+}
+
 void AfMalloc::init() {
     // TODO this should be implemented that we allocate memory with our own allocator and size
     for (int i = 0; i < 2; i++) {
@@ -264,16 +283,15 @@ void AfMalloc::init() {
 
 // That should enable merging of two chunks
 void AfMalloc::free(void *p) {
+    // What guarantees we have here
+    // How do we want our merging of top chunk to work?
 
-    // TODO detect double free -> that should be easy?
-    /**
-     * If chunk next to the top chunk is free, then we extend top chunk. That is why we never have
-     * inside the top chunk the prev_size or isPrevFree set inside the size although there is enough space for that
-    */
-    auto *free_chunk = moveToThePreviousChunk(p, HEAD_OF_CHUNK_SIZE);
+    // LifetimeCheck: chunk is created
+    Chunk *free_chunk = getChunkPointerBefore(p, HEAD_OF_CHUNK_SIZE);
+
     AfHeap *heap = getHeapAddress(p);
-
     AfArena *arena = heap->arena_ptr_;
+    assert(arena != nullptr);
 
     // after we have heap we need to get arena
     // then work with it
@@ -282,97 +300,107 @@ void AfMalloc::free(void *p) {
 
     clearUpDataSpaceOfChunk(free_chunk);
 
+    auto const isFreedChunkCoalescable = isChunkCoalescable(*free_chunk);
+
+    if (!isFreedChunkCoalescable) {
+        // link it and go back
+    }
+
     // Here we want to check if the chunk in the physical memory before us has actually
     // been freed. If so, we can try to merge those two
-    if(free_chunk->isPrevFree() && isChunkCoalescable(*free_chunk)) {
+
+    Chunk *prev_chunk = getChunkPointerBefore(free_chunk, free_chunk->getPrevSize());
+    if (free_chunk->isPrevFree()) {
+        // LifetimeCheck: This chunk should exist as it was created on malloc and now is either free
+        // or it is in use
+        // If it is in use, we can use std::launder, if it is free, it was either coalesced or not.
+        // If it is coalesced, it is from some chunk which was created on malloc, so should be fine.
+        // If not, also fine, simpler case.
+    }
+
+    // here we are reading only the memory from objects whose lifetime has started
+    if(isFreedChunkCoalescable && free_chunk->isPrevFree() && isChunkCoalescable(*prev_chunk)) {
         // previous chunk is free, we need to merge them
-        std::size_t prev_size = free_chunk->getPrevSize();
+        const auto prev_size = free_chunk->getPrevSize();
 
-        /// Then we need to go to that place in the memory
-        auto *chunk_before = moveToThePreviousChunk(free_chunk, prev_size);
-        // if we don't do this here, then we will later have a problem
-        // with merging two chunks and iterating over free chunks because of zeroing of memory
+        unlinkChunk(prev_chunk);
 
-        unlinkChunk(chunk_before);
-        //std::destroy_at<Chunk>(chunk_before);
-
-        chunk_before->setSize( prev_size + free_chunk->getSize());
-        free_chunk = chunk_before;
+        prev_chunk->setSize(prev_size + free_chunk->getSize());
+        free_chunk = prev_chunk;
         clearUpDataSpaceOfChunk(free_chunk);
     }
 
-    auto *next_chunk = moveToTheNextChunk(free_chunk, free_chunk->getSize());
+
+    // Step 2 is to merge next chunk if possible
+
+    // LifetimeCheck: This chunk's lifetime should also be fine. Chunk is either top or some other chunk created
+    Chunk *next_chunk = getChunkPointerAfter(free_chunk, free_chunk->getSize());
+
+    // comparing address space
+
+
     // Our chunk is not free until now. It can't be as we are only merging it now.
     assert(!next_chunk->isPrevFree());
 
-    // This works even if we are at the at top, as on the top chunk we don't write size
-    Chunk *chunk_two_hops_in_front =  moveToTheNextChunk(next_chunk, next_chunk->getSize());
+    // To coalesce nextChunk we need to check if next chunk is topChunk
+    // or it is possible to coalesce it
+    bool isNextChunkFree{false};
+    // next chunk is not top, hence we need to check by moving to the chunk after next chunk if the next chunk is free
+    /// [free_chunk][next_chunk][(prev_size)(size | is_prev_free) chunk after next_chunk]
+    if (!arena->isTopChunk(next_chunk)) {
+        // LifetimeCheck: should be fine. Again chunk's lifetime has started on malloc
+        isNextChunkFree = getChunkPointerAfter(next_chunk, next_chunk->getSize())->isPrevFree();
+    }
+
+    bool canNextChunkBeCoalesced = isChunkCoalescable(*next_chunk) && isNextChunkFree;
+
 
     // if the next_chunk is free, we will merge the `freeChunk` and the `nextChunk`
     // otherwise `nextChunk` is allocated, and we can't merge these two
-    if(chunk_two_hops_in_front->isPrevFree() && isChunkCoalescable(*free_chunk)) {
+
+    // This case can happen that we have fast_chunk and top_chunk - in that case we can't merge them
+    if(isFreedChunkCoalescable && canNextChunkBeCoalesced) {
         // nextChunk is free so we need to merge that one too
         free_chunk->setSize(free_chunk->getSize() + next_chunk->getSize());
 
         unlinkChunk(next_chunk);
-        //std::destroy_at<Chunk>(next_chunk);
+        // todo do we need to do destroy at
 
         clearUpDataSpaceOfChunk(free_chunk);
-        chunk_two_hops_in_front->setPrevFree();
-        chunk_two_hops_in_front->setPrevSize(free_chunk->getSize());
+        Chunk *new_next_chunk = getChunkPointerAfter(free_chunk, free_chunk->getSize());
+        // LifetimeCheck: at this point we are materializing object of previous_size_
+        // which might have been used by user's object. However, that should be fine
+        // because user called free, and now user's object lifetime has ended
+        new_next_chunk->setPrevFree();
+        new_next_chunk->setPrevSize(free_chunk->getSize());
+    }else {
+        next_chunk->setPrevFree();
+        next_chunk->setPrevSize(free_chunk->getSize());
     }
-    // when the nextChunk is free, if chunkTwoHopsInFront was free, it would be merged in the step before.
+
+    // when the nextChunk is free, if chunkTwoHopsInFront was free,
+    // it would be merged in the step before.
     // This way we know that our chunk is free, and only one step around us can be free
 
     // We need to find where is the next chunk, as we might have merged it in the step before
-    next_chunk = moveToTheNextChunk(free_chunk, free_chunk->getSize());
+    // This is now a new pointer
+    next_chunk = getChunkPointerAfter(free_chunk, free_chunk->getSize());
 
-    if(next_chunk < arena->top_) {
-        // Set that our chunk is free, only if it is not fast chunk.
-        // By not setting it for the fast chunk, we disable coalasceing for the fast chunks
-        if(isChunkCoalescable(*free_chunk)) {
-            // Set on the next that chunk before is free
-            next_chunk->setPrevFree();
-            next_chunk->setPrevSize(free_chunk->getSize());
-        }else {
-            // this is needed for force coalescing of fast chunks later
-            next_chunk->setPrevSize(free_chunk->getSize());
-        }
-    }else {
-        if(isChunkCoalescable(*free_chunk)) {
-            // next chunk here is arena.top_
-            assert(next_chunk == arena->top_);
-            // in this part of code we extend top to the free_chunk
-            // this means we can't add free chunk to the free list
-            static_cast<Chunk*>(arena->top_)->setPrevFree();
-            static_cast<Chunk*>(arena->top_)->setPrevSize(free_chunk->getSize());
-            // here we should actually merge our chunk with the top, and that way we have extended the unlimited free chunk
-            arena->extendTopChunk();
-            // We have extended the top, the rest of the code deals with adding the chunk to the unsorted chunks
-            return;
-        }else {
-            static_cast<Chunk*>(arena->top_)->setPrevSize(free_chunk->getSize());
-        }
-    }
 
-    // We append to the top of the list newly freed chunk
-    Chunk *head_chunk = &arena->unsorted_chunks_;
-    if(isPointingToSelf(*head_chunk)) {
-        head_chunk->setNext(free_chunk);
-        head_chunk->setPrev(free_chunk);
+    // If chunk and top are part of same heap, then we extend heap chunk, otherwise no
+    if(isFreedChunkCoalescable &&  arena->isTopChunk(next_chunk)) {
+        // next chunk here is arena.top_
+        assert(next_chunk == arena->top_);
+        // in this part of code we extend top to the free_chunk
+        // this means we can't add free chunk to the free list
 
-        free_chunk->setNext(head_chunk);
-        free_chunk->setPrev(head_chunk);
+        // here we should actually merge our chunk with the top, and that way we have extended the unlimited free chunk
+        arena->extendTopChunk();
+        // We have extended the top, the rest of the code deals with adding the chunk to the unsorted chunks
         return;
     }
 
-    Chunk *last_in_chunk = head_chunk->getNext();
-
-    free_chunk->setPrev(head_chunk);
-    free_chunk->setNext(last_in_chunk);
-
-    last_in_chunk->setPrev(free_chunk);
-    head_chunk->setNext(free_chunk);
+    arena->linkChunkToUnsortedChunks(free_chunk);
 }
 
 AfMalloc::~AfMalloc() {
@@ -430,7 +458,7 @@ void* AfArena::findChunkFromUnsortedFreeChunks(std::size_t needed_size) {
 
     // TODO this is opportunity to split the chunk on the multiple chunks, since we could otherwise get really
     // big chunk
-    Chunk* next_chunk = moveToTheNextChunk(match, match->getSize());
+    Chunk* next_chunk = getChunkPointerAfter(match, match->getSize());
     // next chunk only knows that we are free
     next_chunk->unsetPrevFree();
     // this part of memory will be used by our chunk also, hence we need to zero the memory
@@ -496,7 +524,7 @@ Chunk *AfArena::tryFindFastBinChunk(const std::size_t size) {
             Chunk *match = chunk_list.getNext();
             unlinkChunk(match);
             assert(match != nullptr);
-            Chunk *next_chunk = moveToTheNextChunk(match, match->getSize());
+            Chunk *next_chunk = getChunkPointerAfter(match, match->getSize());
             // next chunk only knows that we are free
             next_chunk->unsetPrevFree();
             // this part of memory will be used by our chunk also, hence we need to zero the memory
@@ -506,6 +534,28 @@ Chunk *AfArena::tryFindFastBinChunk(const std::size_t size) {
         index++;
     }
     return nullptr;
+}
+
+
+void AfArena::linkChunkToUnsortedChunks(Chunk *chunk) {
+    // We append to the top of the list newly freed chunk
+    Chunk *head_chunk = &unsorted_chunks_;
+    if(isPointingToSelf(*head_chunk)) {
+        head_chunk->setNext(chunk);
+        head_chunk->setPrev(chunk);
+
+        chunk->setNext(head_chunk);
+        chunk->setPrev(head_chunk);
+        return;
+    }
+
+    Chunk *last_in_chunk = head_chunk->getNext();
+
+    chunk->setPrev(head_chunk);
+    chunk->setNext(last_in_chunk);
+
+    last_in_chunk->setPrev(chunk);
+    head_chunk->setNext(chunk);
 }
 
 /**
@@ -530,7 +580,7 @@ Chunk *AfArena::tryFindSmallBinChunk(std::size_t size) {
             Chunk *match  = chunk_list->getPrev();
             unlinkChunk(match);
             assert(match != nullptr);
-            Chunk* next_chunk = moveToTheNextChunk(match, match->getSize());
+            Chunk* next_chunk = getChunkPointerAfter(match, match->getSize());
             // next chunk only knows that we are free
             next_chunk->unsetPrevFree();
             // this part of memory will be used by our chunk also, hence we need to zero the memory
@@ -546,6 +596,25 @@ Chunk *AfArena::tryFindSmallBinChunk(std::size_t size) {
     }
 }
 
+AfHeap* AfArena::setupHeap(void *p) {
+    assert(getAlignmentSize(p, MAX_HEAP_SIZE) == 0);
+
+    auto *heap = std::construct_at(static_cast<AfHeap*>(p), MAX_HEAP_SIZE, this, last_heap_);
+    last_heap_ = heap;
+
+    // should be moved to setupNewHeap
+    top_ = moveToTheNextPlaceInMemAlignment(last_heap_, sizeof(AfHeap), ALIGNMENT);
+
+    allocated_size_ += last_heap_->heap_size_;
+
+    // now we need to put that new top is this one from this heap
+
+    // free size is size of heap subtracted with memory needed for afHeap allocation
+    // and alignment
+    free_size_ = last_heap_->heap_size_ - getPtrDiffSize(top_, last_heap_);
+    return heap;
+}
+
 Chunk *tryFindLargeChunk(Chunk *large_chunks, std::size_t size) {
     Chunk *current = large_chunks->getPrev();
     while(large_chunks != current) {
@@ -553,7 +622,7 @@ Chunk *tryFindLargeChunk(Chunk *large_chunks, std::size_t size) {
             unlinkChunk(current);
             // TODO prepare chunk to be returned to user
             // Also split the chunk maybe
-            Chunk* next_chunk = moveToTheNextChunk(current, current->getSize());
+            Chunk* next_chunk = getChunkPointerAfter(current, current->getSize());
             // next chunk only knows that we are free
             next_chunk->unsetPrevFree();
             // this part of memory will be used by our chunk also, hence we need to zero the memory
@@ -583,7 +652,7 @@ bool hasElementsInList(const Chunk &list_head) {
 }
 
 
-AfArena* AfMalloc::getArena() {
+AfArena& AfMalloc::getArena() {
     // get number active arenas
     // get max number arenas
     // if this is not a new thread
@@ -595,18 +664,18 @@ AfArena* AfMalloc::getArena() {
     //        create new one and use that one
     // lock arena and return it
     if (getGlobalConfig().disableRoundRobin) {
-        return arenas_[0].get();
+        return *arenas_[0].get();
     }
 
     const auto arena_index = next_arena_.fetch_add(1) % arenas_.size();
     auto &arena = arenas_[arena_index];
-    return arena.get();
+    return *arena.get();
 }
 // todo rename to allocate new heap block and then we don't have to pass arena
-bool AfMalloc::allocateNewHeap(AfArena &arena) {
+void* AfMalloc::allocateNewHeap() {
     void *p1 = MMAP (nullptr, MAX_HEAP_SIZE, PROT_READ | PROT_WRITE, MAP_POPULATE);
     if(p1 == nullptr) {
-        return false;
+        return nullptr;
     }
 
     if (getAlignmentSize(p1, MAX_HEAP_SIZE) != 0) {
@@ -614,7 +683,7 @@ bool AfMalloc::allocateNewHeap(AfArena &arena) {
         assert(ok == 0);
         p1 = MMAP (nullptr, 2 * MAX_HEAP_SIZE, PROT_READ | PROT_WRITE, MAP_POPULATE);
         if (p1 == nullptr) {
-            return false;
+            return nullptr;
         }
         // now we have a chunk of memory which is
         //       |32-aligned [p1 xxxx]|[p2     xxxx            ]|[p3xxxx] ....]
@@ -627,48 +696,47 @@ bool AfMalloc::allocateNewHeap(AfArena &arena) {
         p1 = p2;
     }
 
-    // https://www.youtube.com/watch?v=pbkQG09grFw start lifetime as vs bit_Cast?
-    auto *heap = std::construct_at(static_cast<AfHeap*>(p1), MAX_HEAP_SIZE, &arena, arena.last_heap_);
-    arena.last_heap_ = heap;
+    // https://www.youtube.com/watch?v=pbkQG09grFw
 
-    return true;
+
+    return p1;
 }
 
 void *AfMalloc::malloc(const std::size_t size) {
+    /**
+     * AfMalloc first aquires the pointer to arena.
+     *
+     * After arena is aquired, we can check if there are some chunks which are recently freed that we can reuse.
+     * Then we are checking if chunk is in fast bin range, small bin range or in unsorted larger chunks.
+     */
+    AfArena &af_arena = getArena();
 
-    AfArena *maybe_arena = getArena();
-    if(!maybe_arena) {
-        assert(false);
-    }
-
-
-    auto &af_arena = *maybe_arena;
     std::unique_lock lock(af_arena.arena_lock_);
 
 
-    std::size_t needed_size =  getMallocNeededSize(size);
+    const std::size_t malloc_needed_size =  getMallocNeededSize(size);
 
     // if there are free chunks, try to use them
     if(hasElementsInList(af_arena.unsorted_chunks_)) {
-        if(auto maybe_chunk = af_arena.findChunkFromUnsortedFreeChunks(needed_size)) {
+        if(auto maybe_chunk = af_arena.findChunkFromUnsortedFreeChunks(malloc_needed_size)) {
             return maybe_chunk;
         }
     }
 
-    if(isInFastBinRange(needed_size)) {
-        if(auto *chunk = af_arena.tryFindFastBinChunk(needed_size)) {
+    if(isInFastBinRange(malloc_needed_size)) {
+        if(auto *chunk = af_arena.tryFindFastBinChunk(malloc_needed_size)) {
             return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
         }
     }
 
-    if(isInSmallBinRange(needed_size)) {
-        if(auto *chunk = af_arena.tryFindSmallBinChunk(needed_size)) {
+    if(isInSmallBinRange(malloc_needed_size)) {
+        if(auto *chunk = af_arena.tryFindSmallBinChunk(malloc_needed_size)) {
             return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
         }
     }
 
     if(!isPointingToSelf(af_arena.unsorted_large_chunks_)) {
-        if(auto *chunk = tryFindLargeChunk(&af_arena.unsorted_large_chunks_, needed_size)) {
+        if(auto *chunk = tryFindLargeChunk(&af_arena.unsorted_large_chunks_, malloc_needed_size)) {
             return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
         }
     }
@@ -677,43 +745,43 @@ void *AfMalloc::malloc(const std::size_t size) {
     // If there is less then HEAD_OF_CHUNK_SIZE left, we need to
 
     // There needs to be enough size for our allocation and for the top chunk left
-    if(af_arena.free_size_  < needed_size + TOP_CHUNK_NEEDED_SIZE) {
-        if(needed_size > MAX_HEAP_SIZE) {
+    if(af_arena.free_size_  < malloc_needed_size + TOP_CHUNK_NEEDED_SIZE) {
+        if(malloc_needed_size > MAX_HEAP_SIZE) {
             assert(false); // unsupported case
         }
-        // TODO allocate new heap
+
+
         if(af_arena.top_ != nullptr) {
-            // TODO how do we behave if there is only some small amount of memory left
-            // We probably want to try to make a
-            // usable free chunk out of it?
+            // The leftover chunk should be reused
+            assert(false);
         }
 
-        if(!allocateNewHeap(af_arena)) {
-            assert(false); // unsupported case with missing new heap
+        AfHeap *af_heap{nullptr};
+        if(void *heap_memory = allocateNewHeap(); heap_memory != nullptr) {
+            af_heap = af_arena.setupHeap(heap_memory);
         }
-        // should be moved to setupNewHeap
-        af_arena.top_ = moveToTheNextPlaceInMemAlignment(af_arena.last_heap_, sizeof(AfHeap), ALIGNMENT);
-        af_arena.allocated_size_ += af_arena.last_heap_->heap_size_;
-
-        // now we need to put that new top is this one from this heap
-
-        // free size is size of heap - memory needed for heap object - alignment needed to get to the ALIGNMENT
-        af_arena.free_size_ = af_arena.last_heap_->heap_size_ - sizeof(AfHeap) - getAlignmentSize(moveToTheNextPlaceInMem(af_arena.last_heap_, sizeof(AfHeap)), ALIGNMENT);
+        assert(af_heap != nullptr);
     }
 
-    // We can store anything which has alignment of 16 bytes.
 
     // Here we will give to user the size needed
     // what we will do is we will return to user pointer after chunk's block
     void *user_ptr = af_arena.top_;
 
-    // TODO update this part so that we use std::start_lifetime_as
-    auto *user_chunk = std::construct_at(static_cast<Chunk*>(user_ptr), 0, needed_size, nullptr, nullptr);
+    // Get the chunk we return to user
+    auto *user_chunk = new (user_ptr) Chunk(0, malloc_needed_size, nullptr, nullptr);
+
     if(track_pointers_) {
         createPtrHumaneReadableName("ptr", user_chunk);
     }
-    af_arena.free_size_ -=  needed_size;
-    af_arena.top_ = moveToTheNextPlaceInMem(user_chunk, needed_size);
+
+
+    af_arena.free_size_ -=  malloc_needed_size;
+    af_arena.top_ = moveToTheNextPlaceInMem(user_chunk, malloc_needed_size);
+
+
+    auto *top = std::start_lifetime_as<Chunk>(af_arena.top_);
+    top->setSize(af_arena.free_size_);
 
 
     return moveToTheNextPlaceInMem(user_ptr, HEAD_OF_CHUNK_SIZE);
@@ -730,46 +798,109 @@ std::size_t getPtrDiffSize(void *second, void *first) {
 }
 
 void *AfMalloc::memAlign(std::size_t alignment, std::size_t size) {
-    assert(false);
-
     // alignment + size
-    assert(alignment % 2 == 0);
-    // if alignment is not at least 16, reconfigure to multiple of 16, we can work with
+    assert(alignment != 0);
+    // assert that it is power of 2
+    assert((alignment & (-alignment)) == alignment);
+
+    // if alignment is not at least 16, reconfigure to multiple of 16
     // if alignment or size which we allocate for chunk is not multiple of ALIGNMENT
-    // then we will have problem allocating new chunk, it will be misaligned
-    if(alignment < ALIGNMENT || alignment % ALIGNMENT != 0) {
-        alignment = (alignment / ALIGNMENT + 1) * ALIGNMENT; // round up to the bigger number
+    // then we will have problem allocating new chunk - either the size of our chunk needs to increase
+    // or the chunk next one will be misaligned
+
+
+    alignment = std::max(alignment, ALIGNMENT);
+
+    // mallocNeededSize would not work correctly if we pass our needed alignment
+    // It would allocate more memory than needed and we would waste space
+    // This would result in memory consumption issue
+    // Reasoning - example is if user wants to allocate 25 bytes on 32 byte alignment
+    // with alignment of 16 -> 25 + 15 + 8 = 48 -> 48/ 16 = 3
+    // with alignment of 32 -> 25 + 31 + 8 = 64 / 32 =2 -> use 64 bytes
+    // malloc needed size needs to be aligned on 16 bytes conceptually, not on bytes user requested
+    // the start of user data needs to be aligned on user size, and that is a different concept.
+    // By forcing alignment of chunk on the user size, we still have issue that user start might not be aligned on
+    // the same alignment space.
+    // For example - let say user wants to align on 64.
+    // If our chunk is aligned also on 64, this means user data will start on 64 + 16(prev_size + size) meaning
+    // we will be out of sync with what user wants - 80byte offset is not 64 aligned
+    // It is still good idea to keep our size 16 byte aligned so we can move correctly from one chunk to the other
+    const auto allocatedSizeNeeded = getMallocNeededSize(size);
+
+    auto &arena = getArena();
+    Chunk *top_chunk = std::launder(reinterpret_cast<Chunk*>(arena.getTop()));
+    std::size_t top_chunk_size = top_chunk->getSize();
+
+    std::size_t missAlignedSpace = getAlignmentSize(top_chunk, alignment);
+    void *start_of_user_data = moveToTheNextPlaceInMem(top_chunk, missAlignedSpace);
+
+    // since start_of_user_data is now aligned to what user wants
+    // we need to check if have 16 bytes before to fit our HEAD_OF_CHUNK and that we can fit one whole chunk before
+    // -- there are two options here - we can fit the exactly HEAD_OF_CHUNK before start_of_user_data
+    // and there is no additional space left
+    // -----if there is some space left, it needs to be at least CHUNK_SIZE
+    while(start_of_user_data < moveToTheNextPlaceInMem(top_chunk,top_chunk->getSize())) {
+        const auto diff = getPtrDiffSize(start_of_user_data, top_chunk);
+        if (diff < HEAD_OF_CHUNK_SIZE) {
+            start_of_user_data = moveToTheNextPlaceInMem(start_of_user_data, alignment); // is this ok
+        }
+        else if (diff == HEAD_OF_CHUNK_SIZE) {
+            break;
+        }
+        else if (diff > HEAD_OF_CHUNK_SIZE && diff <  CHUNK_SIZE) {
+            start_of_user_data = moveToTheNextPlaceInMem(start_of_user_data, alignment);
+        }
+        else{
+            break;
+        }
     }
 
+    assert(getAlignmentSize(start_of_user_data, alignment) == 0);
+    assert(getPtrDiffSize(start_of_user_data, top_chunk) > HEAD_OF_CHUNK_SIZE);
 
-    //std::size_t alignmentSizeInternal = getAlignmentSize(getTop(), alignment);
-    std::size_t alignmentSizeInternal{0};
-    void *top{nullptr};
-    //void *top = getTop();
-    void *new_top = moveToTheNextPlaceInMem(top, alignmentSizeInternal);
-    // since new_top is now aligned to what user wants
-    // we need to check if have 16 bytes before to fit our HEAD_OF_CHUNK
-    if(getPtrDiffSize(new_top, top) < HEAD_OF_CHUNK_SIZE) {
-        new_top = moveToTheNextPlaceInMem(new_top, 1);
-        alignmentSizeInternal = getAlignmentSize(new_top, alignment);
-        new_top = moveToTheNextPlaceInMem(new_top, alignmentSizeInternal);
-        assert(getPtrDiffSize(new_top, top) > HEAD_OF_CHUNK_SIZE);
+    void *start_of_chunk = moveToThePreviousPlaceInMem(start_of_user_data, HEAD_OF_CHUNK_SIZE);
+
+    // we need to deal with case when between our chunk and previous is less than 32 bytes
+    // no chunk can fit then and we have an issue
+    std::size_t unusedChunkSize  = getPtrDiffSize(start_of_chunk, top_chunk);
+
+    top_chunk_size-= unusedChunkSize;
+
+    if (unusedChunkSize == 0) {
+        // pass
+    }else {
+        assert(unusedChunkSize >= CHUNK_SIZE);
+        assert(unusedChunkSize % ALIGNMENT == 0); // it is a multiple of 16
+
+        const bool isFreeChunkBeforeTop = top_chunk->isPrevFree();
+        const auto prevSize = top_chunk->getPrevSize();
+        top_chunk->setSize(unusedChunkSize);
+        top_chunk->setPrevSize(prevSize);
+        if (isFreeChunkBeforeTop) {
+            top_chunk->setPrevFree();
+        }
+
+        auto *unusedChunk = std::launder(reinterpret_cast<Chunk*>(arena.getTop()));
+        arena.linkChunkToUnsortedChunks(unusedChunk);
     }
 
-    void *start_of_chunk = moveToThePreviousPlaceInMem(new_top, HEAD_OF_CHUNK_SIZE);
-    assert(reinterpret_cast<uintptr_t>(new_top) % alignment == 0);
-    std::size_t ptrDiffSize = getPtrDiffSize(new_top, top);
+    assert(reinterpret_cast<uintptr_t>(start_of_user_data) % alignment == 0);
 
-    std::size_t mallocNeededSize = getMallocNeededSize(size);
     Chunk * chunk = std::construct_at(static_cast<Chunk*>(start_of_chunk), 0, 0, nullptr, nullptr);
-    chunk->setSize(mallocNeededSize);
-
-    if(ptrDiffSize >= CHUNK_SIZE) {
-        chunk->setPrevFree();
-        chunk->setPrevSize(ptrDiffSize);
-        // move to the unsorted bin
+    if (unusedChunkSize) {
+        chunk->setPrevSize(unusedChunkSize);
     }
-    //top_ = moveToTheNextPlaceInMem(start_of_chunk, mallocNeededSize);
+
+    chunk->setSize(allocatedSizeNeeded);
+    if (unusedChunkSize) {
+        chunk->setPrevFree();
+    }
+
+    top_chunk_size-=allocatedSizeNeeded;
+
+    arena.top_ = moveToTheNextPlaceInMem(start_of_chunk, allocatedSizeNeeded);
+    auto *newTopChunk = std::start_lifetime_as<Chunk>(arena.top_);
+    newTopChunk->setSize(top_chunk_size);
 
     return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
 }
