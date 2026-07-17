@@ -22,6 +22,18 @@ inline GlobalConfig& getGlobalConfig() {
   return globalConfig;
 }
 
+// How we mark that previous is inuse
+// 63 may come out of random, but it is sizeof(std::size_t) * CHAR_NUM_BITS - 1
+static std::size_t PREV_FREE = 1ul << 63;
+static std::size_t EMPTY_FLAG = 0ul;
+
+struct Flag {
+  explicit Flag(const std::size_t flag) : flag_(flag) {}
+  const std::size_t flag_{};
+};
+
+
+
 
 
 // original malloc implementation has fastBins from 32 to 160 bytes
@@ -40,10 +52,7 @@ const std::size_t PAGE_SIZE = sysconf(_SC_PAGESIZE);
 constexpr std::size_t SIZE_OF_SIZE = sizeof(std::size_t);
 static_assert(SIZE_OF_SIZE == 8);
 
-// How we mark that previous is inuse
-// 63 may come out of random, but it is sizeof(std::size_t) * CHAR_NUM_BITS - 1
-static std::size_t PREV_FREE = 1ul << 63;
-static std::size_t EMPTY_FLAG = 0ul;
+
 
 // 32 pages, or 128kB
 const std::size_t MAX_HEAP_SIZE = 32*PAGE_SIZE;
@@ -100,8 +109,14 @@ class Chunk{
       return size_ & ~PREV_FREE;
     }
 
-    void setSize(const std::size_t size) {
-      size_ = (size & ~PREV_FREE);
+
+
+    void cleanSetSize(const std::size_t size) {
+      size_ = size;
+    }
+
+    void setSizeWithFlag(const std::size_t size, const Flag flag) {
+      size_ = size | flag.flag_;
     }
 
     [[nodiscard]] bool isPrevFree() const {
@@ -176,6 +191,7 @@ struct std::hash<Chunk*> {
 static_assert(std::is_implicit_lifetime_v<Chunk>);
 
 
+Chunk *chunkAt(void *ptr);
 
 
 
@@ -295,7 +311,7 @@ class AfArena{
 
 public:
 
-  AfArena();
+  AfArena(std::size_t id);
 
   void initializeAfArena();
 
@@ -305,8 +321,11 @@ public:
   //
   // AfArena *prev_arena_;
 
-  [[nodiscard]] std::size_t getFreeSize() const {
-    return free_size_;
+  [[nodiscard]] std::size_t getTopChunkSize() const {
+    if (top_ == nullptr) {
+      return 0;
+    };
+    return chunkAt(top_)->getSize();
   }
 
 
@@ -376,11 +395,6 @@ public:
   std::size_t allocated_size_{0};
 
   /**
-   * Tracks the number of free bytes left in the top chunk
-   */
-  std::size_t free_size_{0};
-
-  /**
    * Contains the list of unsorted chunks. List is populated on the free, and then on the malloc
    * we put the chunk in the corresponding bin. We traverse this double linked list in LIFO order, which is
    * different from what malloc does (FIFO). FIFO is better for giving chunks a chance to be reused.
@@ -409,6 +423,8 @@ public:
 
 
   AfHeap *last_heap_{nullptr};
+
+  std::size_t id_{0};
 
   AfHeap* setupHeap(void *heap);
 
@@ -443,7 +459,7 @@ Chunk *tryFindLargeChunk(Chunk *large_chunks, std::size_t size);
 
 bool isPointingToSelf(const Chunk &list_head);
 
-bool hasElementsInList(const Chunk &list_head);
+bool hasChunkInList(const Chunk &list_head);
 
 void unlinkChunk(Chunk* chunk);
 
@@ -455,6 +471,9 @@ class AfMalloc{
   // struct which holds arena
   public:
     explicit AfMalloc();
+
+
+    explicit AfMalloc(std::size_t num_arenas);
 
     explicit AfMalloc(bool track_pointers) ;
 
@@ -514,6 +533,10 @@ class AfMalloc{
 
     ~AfMalloc();
 
+   const std::vector<std::unique_ptr<AfArena>>& getArenas() {
+    return arenas_;
+  }
+
   private:
       void init();
 
@@ -547,8 +570,17 @@ class AfMalloc{
       std::unordered_map<std::string, std::size_t> name_counter_{};
       bool track_pointers_{false};
 
+     std::size_t num_arenas_{1};
+
 };
 
+
+struct ThreadStaticStruct {
+  AfArena *arena_{nullptr};
+
+};
+
+inline thread_local ThreadStaticStruct threadStaticStruct{};
 
 
 

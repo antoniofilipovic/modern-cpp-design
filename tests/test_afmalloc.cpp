@@ -1,3 +1,4 @@
+#include <cstring>
 #include <gtest/gtest.h>
 #include <string>
 
@@ -99,7 +100,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestAfMallocGet3Chunks){
     AfArena *arena = heap->arena_ptr_;
     ASSERT_TRUE(arena != nullptr);
 
-    ASSERT_EQ(total_allocated_size - arena->getFreeSize() - sizeof(AfHeap) - heap_alignment_size, first_ptr_usage_size);
+    ASSERT_EQ(total_allocated_size - arena->getTopChunkSize() - sizeof(AfHeap) - heap_alignment_size, first_ptr_usage_size);
 
     const void *first_ptr_top = arena->getTop();
     // we expect the top to be aligned on 16 byte boundary
@@ -822,8 +823,108 @@ TEST_F(BasicAfMallocSizeAllocated, TestMemAlign) {
 
 }
 
+TEST_F(BasicAfMallocSizeAllocated, MallocNoOverwritteUserData) {
+    /// Malloc should not use bytes of prev_size which are in use for the prev chunk
+    /// while that chunk is in use
+    AfMalloc af_malloc{};
+
+
+    void *ptr_1 = af_malloc.malloc(25);
+    Chunk *chunk_1 = getChunkPointerBefore(ptr_1, HEAD_OF_CHUNK_SIZE);
+    ASSERT_EQ(chunk_1->getSize(), 48);
+    // how does this work
+    // auto *value = std::construct_at(static_cast<char*>(ptr_1), "string");
+    std::array<char, 48> array{};
+    array.fill('a');
+    memcpy(ptr_1, &array, 48);
+
+
+    void *ptr_2 = af_malloc.malloc(FAST_BIN_RANGE_END);
+    Chunk *chunk_2 = getChunkPointerBefore(ptr_2, HEAD_OF_CHUNK_SIZE);
+
+    std::array<char, sizeof(std::size_t)> first_bytes{};
+    std::memcpy(&first_bytes, chunk_2, sizeof(std::size_t));
+
+    std::array<char, sizeof(std::size_t)> expected_bytes{};
+    expected_bytes.fill('a');
+    ASSERT_EQ(first_bytes, expected_bytes);
+
+
+
+
+}
 
 TEST_F(BasicAfMallocSizeAllocated, TestMoveFromFreeChunks) {
+
+}
+
+
+
+class MultiThreadedDevelopment : public ::testing::Test {
+public:
+    MultiThreadedDevelopment() = default;
+
+    void SetUp() override {
+        getGlobalConfig().disableRoundRobin = false;
+    }
+    void TearDown() override {
+        getGlobalConfig().disableRoundRobin = false;
+    }
+
+
+};
+
+// how to synchronize multiple threads allocating at the same time?
+TEST_F(MultiThreadedDevelopment, MultipleThreadsAllocating) {
+    /// test that each thread always gets new arena and they are same
+    ///
+    /// We create multiple threads and each gets its own arena
+    ///
+    ///
+    ///
+    constexpr std::size_t num_arenas = 8;
+    AfMalloc af_malloc{num_arenas};
+
+
+
+    std::unordered_map<decltype(std::declval<AfArena>().id_), std::atomic<std::size_t>> num_allocations{};
+
+    const std::vector<std::unique_ptr<AfArena>> &arenas = af_malloc.getArenas();
+    for (auto &arena : arenas) {
+        num_allocations.emplace(arena->id_, 0);
+    }
+
+    std::vector<std::thread> threads{};
+    threads.reserve(num_arenas);
+
+    for (std::size_t i = 0; i < num_arenas; i++) {
+        std::thread thread([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            for (std::size_t j = 0; j < 100; j++) {
+                void *ptr = af_malloc.malloc(100);
+                ASSERT_NE(ptr, nullptr);
+                num_allocations[getHeapAddress(ptr)->arena_ptr_->id_].fetch_add(1);
+            }
+
+
+        });
+
+        threads.emplace_back(std::move(thread));
+    }
+
+
+
+
+    for (auto &thread : threads) {
+        thread.join();
+    }
+
+
+
+    for (auto &[arena_id, num_allocation]: num_allocations) {
+        ASSERT_EQ(num_allocation.load(), 100);
+    }
+
 
 }
 
@@ -832,10 +933,7 @@ TEST_F(BasicAfMallocSizeAllocated, DoubleFree) {
     // This should be possible to detect?
 }
 
-// how to synchronize multiple threads allocating at the same time?
-TEST_F(BasicAfMallocSizeAllocated, MultipleThreadsAllocating) {
 
-}
 
 // test for unaligned access
 // create a simple struct which needs to be aligned on 128 bytes
