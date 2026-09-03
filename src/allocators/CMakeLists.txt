@@ -16,7 +16,8 @@ add_library(afmalloc STATIC
 target_sources(afmalloc
         PUBLIC
         ../../include/afmalloc/
+        ../../include/afmalloc/utility
         PRIVATE
         AfMalloc.cpp
 )
-target_include_directories(afmalloc PUBLIC ../../include/afmalloc)
+target_include_directories(afmalloc PUBLIC ../../include/afmalloc  ../../include/afmalloc/utility)
