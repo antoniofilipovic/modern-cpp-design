@@ -10,6 +10,18 @@
 #include <mutex>
 #include <type_traits>
 
+#include "utility/PointerTracker.hpp"
+
+
+
+enum TrackingIds : uint8_t {
+  PTR = 0,
+  FAST_CHUNK,
+  SMALL_CHUNK,
+  UNSORTED_LARGE_CHUNKS,
+  UNSORTED_CHUNKS
+
+};
 
 struct GlobalConfig {
   bool isTrackingGlobal{false};
@@ -382,6 +394,8 @@ public:
     return small_chunks_;
   }
 
+  void dumpMemory();
+
 
   // move to private
 
@@ -425,6 +439,8 @@ public:
   AfHeap *last_heap_{nullptr};
 
   std::size_t id_{0};
+
+  PointerTracker pointer_tracker_{};
 
   AfHeap* setupHeap(void *heap);
 
@@ -512,22 +528,6 @@ class AfMalloc{
 
     void dumpMemory();
 
-    std::string getPtrHumaneReadableName(Chunk *chunk) {
-      auto iter = name_map_.find(chunk);
-      assert(iter != name_map_.end());
-      return iter->second;
-    }
-
-    std::string createPtrHumaneReadableName(std::string_view prefix, Chunk *chunk) {
-      auto iter = name_map_.find(chunk);
-      if(iter != name_map_.end()) {
-        return iter->second;
-      }
-      name_counter_[std::string{prefix}];
-
-      auto [insert_iter, ok ] = name_map_.emplace(chunk, std::format("{}_{}", prefix, name_counter_[std::string{prefix}]++));
-      return insert_iter->second;
-    }
 
     void printArenasMemory() {}
 
@@ -565,10 +565,6 @@ class AfMalloc{
       std::atomic<uint64_t> next_arena_{0};
 
       std::size_t max_num_arenas_{NUM_ARENAS_FACTOR * NUM_CORES};
-
-      std::unordered_map<Chunk *, std::string> name_map_{};
-      std::unordered_map<std::string, std::size_t> name_counter_{};
-      bool track_pointers_{false};
 
      std::size_t num_arenas_{1};
 

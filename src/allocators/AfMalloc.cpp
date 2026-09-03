@@ -10,17 +10,13 @@
 #include "AfMalloc.hpp"
 
 #include <numeric>
+#include <sstream>
 #include <sys/mman.h>
 
 #define MMAP(addr, size, prot, flags) \
  mmap(addr, (size), (prot), (flags)|MAP_ANONYMOUS|MAP_PRIVATE, -1, 0)
 
-
 static_assert(sizeof(long long int) == 8);
-
-
-
-
 
 void* moveToTheNextPlaceInMem(void *ptr, std::size_t size) {
     return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ptr) + size);
@@ -92,7 +88,6 @@ std::size_t getMallocNeededSize(std::size_t size) {
     // In that formula we add also ALIGNMENT_MASK
 
 
-
     /// chunk when used
     /// ----|+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
     ///  a) prev_size
@@ -153,14 +148,25 @@ bool isChunkCoalescable(const Chunk &chunk) {
 AfArena::AfArena(const std::size_t id) : bin_indexes_(2), last_heap_(nullptr), id_(id) {
     // TODO eat own dog food for bin indexes?
 
+    if (getGlobalConfig().isTrackingGlobal) {
+        // include magic enum
+        pointer_tracker_.updateNameMap(TrackingIds::PTR, "PTR");
+        pointer_tracker_.updateNameMap(TrackingIds::SMALL_CHUNK, "SMALL_CHUNK");
+        pointer_tracker_.updateNameMap(TrackingIds::FAST_CHUNK, "FAST_CHUNK");
+        pointer_tracker_.updateNameMap(UNSORTED_CHUNKS, "UNSORTED_CHUNKS");
+        pointer_tracker_.updateNameMap(UNSORTED_LARGE_CHUNKS, "UNSORTED_LARGE");
+    }
+
     initializeAfArena();
+
+
 }
 
 void AfArena::initializeAfArena() {
     fast_chunks_.resize(NUM_FAST_CHUNKS, {0, 0, nullptr, nullptr});
     std::ranges::for_each(fast_chunks_, [this](Chunk &chunk) {
         if(getGlobalConfig().isTrackingGlobal) {
-            //createPtrHumaneReadableName("fast_chunk_", &chunk);
+            pointer_tracker_.createPtrHumaneReadableName(TrackingIds::FAST_CHUNK, &chunk);
         }
         chunk.setNext(&chunk);
         chunk.setPrev(&chunk);
@@ -168,28 +174,30 @@ void AfArena::initializeAfArena() {
 
     small_chunks_.resize(NUM_SMALL_CHUNKS, {0, 0, nullptr, nullptr});
     std::ranges::for_each(small_chunks_, [this](auto &chunk) {
-        // if(globalConfig.isTrackingGlobal) {
-        //     //createPtrHumaneReadableName("small_chunk_", &chunk);
-        // }
+        if(getGlobalConfig().isTrackingGlobal) {
+            pointer_tracker_.createPtrHumaneReadableName(TrackingIds::SMALL_CHUNK, &chunk);
+        }
         chunk.setNext(&chunk);
         chunk.setPrev(&chunk);
     });
+
+
     // Set chunks to point to itself
     unsorted_large_chunks_ = {0, 0, nullptr, nullptr};
     unsorted_large_chunks_.setNext(&unsorted_large_chunks_);
     unsorted_large_chunks_.setPrev(&unsorted_large_chunks_);
 
-    // if(globalConfig.isTrackingGlobal) {
-    //     //createPtrHumaneReadableName("unsorted_large_chunks_", &af_main_arena_.unsorted_large_chunks_);
-    // }
+    if(getGlobalConfig().isTrackingGlobal) {
+        pointer_tracker_.createPtrHumaneReadableName(TrackingIds::UNSORTED_LARGE_CHUNKS, &unsorted_large_chunks_);
+    }
 
     unsorted_chunks_ = {0, 0, nullptr, nullptr};
     unsorted_chunks_.setNext(&unsorted_chunks_);
     unsorted_chunks_.setPrev(&unsorted_chunks_);
 
-    // if(globalConfig.isTrackingGlobal) {
-    //     //createPtrHumaneReadableName("unsorted_chunks_", &unsorted_chunks_);
-    // }
+    if(getGlobalConfig().isTrackingGlobal) {
+        pointer_tracker_.createPtrHumaneReadableName(TrackingIds::UNSORTED_CHUNKS, &unsorted_chunks_);
+    }
 
 
     // only FAST and SMALL bin indexes live here
@@ -269,8 +277,11 @@ AfMalloc::AfMalloc() {
 
 }
 
-AfMalloc::AfMalloc(bool track_pointers) :track_pointers_(track_pointers) {
+AfMalloc::AfMalloc(bool track_pointers) {
+    getGlobalConfig().isTrackingGlobal = track_pointers;
     init();
+
+
 }
 
 bool AfArena::isTopChunk(Chunk *chunk) {
@@ -565,6 +576,146 @@ void AfArena::linkChunkToUnsortedChunks(Chunk *chunk) {
     head_chunk->setNext(chunk);
 }
 
+
+void AfArena::dumpMemory() {
+    std::cout << std::format("-------Dumping unsorted chunks-------") << std::endl;
+
+
+    const auto format_output = [this](Chunk *chunk) -> std::string {
+        return std::format("{}[{} {} {} {}]", pointer_tracker_.getPtrHumaneReadableName(chunk), chunk->getPrevSize(), chunk->getSize(),
+            pointer_tracker_.getPtrHumaneReadableName(chunk->getNext()), pointer_tracker_.getPtrHumaneReadableName((chunk->getPrev())));
+    };
+
+    const auto print_bytes_human_readable = [](const std::size_t bytes) -> std::string {
+        // divide with 1024
+        // if the division result > 1, use it
+        // else stop
+        const std::array<std::string, 5> units = {"B", "KB", "MB", "GB", "TB"};
+
+
+
+        auto res = bytes;
+        auto unit = 0;
+        while (res >= 1024 && unit + 1  < units.size()) {
+            res = res / 1024;
+            unit ++;
+        }
+        return std::to_string(res) + units[unit];
+    };
+
+    {
+        Chunk &head = unsorted_chunks_;
+        Chunk *start = head.getNext();
+
+        std::cout << "unsorted chunks" << std::endl;
+         std::cout << format_output(&head) << std::endl;
+        while(start != &head) {
+            std::cout << format_output(start) << std::endl;
+            start = start->getNext();
+        }
+    }
+
+    {
+        auto &fast_chunks = fast_chunks_;
+        std::size_t i{0};
+        for(auto &head: fast_chunks) {
+            if(!isPointingToSelf(head)) {
+                std::cout << std::format("-------FastChunk{}-------", i++) << std::endl;
+                Chunk *start = head.getNext();
+
+                std::cout << format_output(&head) << std::endl;
+                while(start != &head) {
+                    std::cout << format_output(start) << std::endl;
+                    start = start->getNext();
+                }
+            }else {
+                i++;
+            }
+        }
+    }
+
+    {
+        auto &small_chunks = small_chunks_;
+        std::size_t i{0};
+        for(auto &head: small_chunks) {
+            if(!isPointingToSelf(head)) {
+                std::cout << std::format("-------SmallChunk{}-------", i++) << std::endl;
+                Chunk *start = head.getNext();
+
+                std::cout << format_output(&head) << std::endl;
+                while(start != &head) {
+                    std::cout << format_output(start) << std::endl;
+                    start = start->getNext();
+                }
+            }else {
+                i++;
+            }
+        }
+    }
+
+
+    auto print_heap = [&print_bytes_human_readable](AfHeap *heap) -> std::string {
+        return std::format("HEAP: size:{}, heap_ptr: {}, prev_heap: {}",  print_bytes_human_readable(heap->heap_size_),
+            reinterpret_cast<uintptr_t>(heap->arena_ptr_),  reinterpret_cast<uintptr_t>(heap->prev_heap_));
+    };
+
+
+    auto printChunk = [this](Chunk *chunk) -> std::string {
+        // TODO create configurable buffer from your own memory
+        bool isPrevFree = chunk->isPrevFree();
+        std::string prev{};
+        prev.reserve(sizeof(std::size_t));
+        if (isPrevFree) {
+            prev = std::to_string(chunk->getPrevSize());
+        }else {
+            prev.resize(sizeof(std::size_t));
+            std::size_t i{0};
+            void *ptr = chunk;
+            while (i++ < sizeof(std::size_t)) {
+                prev += *(static_cast<char*>(ptr) + i);;
+            }
+        }
+        if (getChunkPointerAfter(chunk, chunk->getSize())->isPrevFree()) {
+            return std::format("[{} {} {} {}]",  prev, chunk->getSize(), pointer_tracker_.getPtrHumaneReadableName(chunk->getPrev()), pointer_tracker_.getPtrHumaneReadableName(chunk->getNext()));
+        }
+        std::string one_part = std::format("{} {}",  prev, chunk->getSize());
+        std::size_t size = chunk->getSize();
+        void *ptr = chunk;
+        // TODO speed up
+        // unsigned char array[256];
+        std::size_t i{0};
+        std::string buffer{};
+        buffer.reserve(chunk->getSize());
+        while (i++ < size) {
+            buffer += *(static_cast<char*>(ptr) + i);
+        }
+        return std::format("[{} {}]", one_part, buffer);
+
+    };
+    AfHeap *af_heap = last_heap_;
+
+    while (af_heap) {
+        std::cout << print_heap(af_heap) << std::endl;
+
+        void *currentByte = moveToTheNextPlaceInMem(af_heap, sizeof(AfHeap));
+        auto size = getAlignmentSize(currentByte, ALIGNMENT);
+
+       currentByte = moveToTheNextPlaceInMem(currentByte, size);
+
+        Chunk *chunk = chunkAt(currentByte);
+
+        while (!isTopChunk(chunk)) {
+            std::cout << printChunk(chunk) << " ";
+            chunk = getChunkPointerAfter(chunk, chunk->getSize());
+        }
+        std::cout << std::endl;
+
+        af_heap = af_heap->prev_heap_;
+    }
+
+
+}
+
 /**
  * Try to find chunk which is of same size, or one size larger.
  * Not sure if we should iterate more here, and then just split the chunk if found
@@ -722,7 +873,6 @@ void *AfMalloc::malloc(const std::size_t size) {
 
     std::unique_lock lock(af_arena.arena_lock_);
 
-
     const std::size_t malloc_needed_size =  getMallocNeededSize(size);
 
     // if there are free chunks, try to use them
@@ -791,8 +941,8 @@ void *AfMalloc::malloc(const std::size_t size) {
     user_chunk->setSizeWithFlag(malloc_needed_size, getFlag(user_chunk->isPrevFree()));
     clearUpDataSpaceOfChunk(user_chunk);
 
-    if(track_pointers_) {
-        createPtrHumaneReadableName("ptr", user_chunk);
+    if(getGlobalConfig().isTrackingGlobal) {
+        af_arena.pointer_tracker_.createPtrHumaneReadableName(af_arena.id_, user_chunk);
     }
 
 
@@ -922,55 +1072,6 @@ void *AfMalloc::memAlign(std::size_t alignment, std::size_t size) {
 }
 
 void AfMalloc::dumpMemory() {
-    // std::cout << std::format("-------Dumping unsorted chunks-------") << std::endl;
-    //
-    // {
-    //     Chunk &head = af_main_arena_.unsorted_chunks_;
-    //     Chunk *start = head.getNext();
-    //
-    //     std::cout << std::format("{}[{} {} {} {}]", getPtrHumaneReadableName(&head), start->getPrevSize(), start->getSize(), getPtrHumaneReadableName(head.getNext()), getPtrHumaneReadableName(head.getPrev())) << std::endl;
-    //     while(start != &head) {
-    //         std::cout << std::format("{}[{} {} {} {}]", getPtrHumaneReadableName(start), start->getPrevSize(), start->getSize(), getPtrHumaneReadableName(start->getNext()), getPtrHumaneReadableName(start->getPrev())) << std::endl;
-    //         start = start->getNext();
-    //     }
-    // }
-    //
-    // {
-    //     auto &fast_chunks = af_main_arena_.fast_chunks_;
-    //     std::size_t i{0};
-    //     for(auto &head: fast_chunks) {
-    //         if(!isPointingToSelf(head)) {
-    //             std::cout << std::format("-------FastChunk{}-------", i++) << std::endl;
-    //             Chunk *start = head.getNext();
-    //
-    //             std::cout << std::format("{}[{} {} {} {}]", getPtrHumaneReadableName(&head), start->getPrevSize(), start->getSize(), getPtrHumaneReadableName(head.getNext()), getPtrHumaneReadableName(head.getPrev())) << std::endl;
-    //             while(start != &head) {
-    //                 std::cout << std::format("{}[{} {} {} {}]", getPtrHumaneReadableName(start), start->getPrevSize(), start->getSize(), getPtrHumaneReadableName(start->getNext()), getPtrHumaneReadableName(start->getPrev())) << std::endl;
-    //                 start = start->getNext();
-    //             }
-    //         }else {
-    //             i++;
-    //         }
-    //     }
-    // }
-    //
-    // {
-    //     auto &small_chunks = af_main_arena_.small_chunks_;
-    //     std::size_t i{0};
-    //     for(auto &head: small_chunks) {
-    //         if(!isPointingToSelf(head)) {
-    //             std::cout << std::format("-------SmallChunk{}-------", i++) << std::endl;
-    //             Chunk *start = head.getNext();
-    //
-    //             std::cout << std::format("{}[{} {} {} {}]", getPtrHumaneReadableName(&head), start->getPrevSize(), start->getSize(), getPtrHumaneReadableName(head.getNext()), getPtrHumaneReadableName(head.getPrev())) << std::endl;
-    //             while(start != &head) {
-    //                 std::cout << std::format("{}[{} {} {} {}]", getPtrHumaneReadableName(start), start->getPrevSize(), start->getSize(), getPtrHumaneReadableName(start->getNext()), getPtrHumaneReadableName(start->getPrev())) << std::endl;
-    //                 start = start->getNext();
-    //             }
-    //         }else {
-    //             i++;
-    //         }
-    //     }
-    // }
+   std::ranges::for_each(arenas_, [](auto &arena) {arena->dumpMemory();});
 
 }

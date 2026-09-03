@@ -854,10 +854,28 @@ TEST_F(BasicAfMallocSizeAllocated, MallocNoOverwritteUserData) {
 
 }
 
-TEST_F(BasicAfMallocSizeAllocated, TestMoveFromFreeChunks) {
+TEST_F(BasicAfMallocSizeAllocated, TestMoveToFreeChunkTopChunk) {
+    //
+
+    AfMalloc af_malloc{true};
+    void *ptr_1 = af_malloc.malloc(25);
+    void *ptr_2 = af_malloc.malloc(FAST_BIN_RANGE_END);
+
+    af_malloc.dumpMemory();
+
+
+    ASSERT_NE(ptr_1, ptr_2);
+
 
 }
 
+
+
+
+
+TEST_F(BasicAfMallocSizeAllocated, DoubleFree) {
+    // This should be possible to detect?
+}
 
 
 class MultiThreadedDevelopment : public ::testing::Test {
@@ -920,6 +938,8 @@ TEST_F(MultiThreadedDevelopment, MultipleThreadsAllocating) {
     }
 
 
+    af_malloc.dumpMemory();
+
 
     for (auto &[arena_id, num_allocation]: num_allocations) {
         ASSERT_EQ(num_allocation.load(), 100);
@@ -929,15 +949,33 @@ TEST_F(MultiThreadedDevelopment, MultipleThreadsAllocating) {
 }
 
 
-TEST_F(BasicAfMallocSizeAllocated, DoubleFree) {
-    // This should be possible to detect?
-}
+TEST_F(MultiThreadedDevelopment, MultipleThreadsSpeed) {
+
+    std::vector<std::thread> threads{};
+    threads.reserve(8);
 
 
+    std::chrono::system_clock::time_point time_start = std::chrono::system_clock::now();
 
-// test for unaligned access
-// create a simple struct which needs to be aligned on 128 bytes
+    AfMalloc malloc{};
+    for (std::size_t i = 0; i < threads.size(); i++) {
+        threads.emplace_back([&] {
+            std::vector<void *> ptrs{};
+            ptrs.reserve(100);
+            for (std::size_t j = 0; j < 100; j++) {
+                ptrs.emplace_back(malloc.malloc(100));
+            }
 
-TEST_F(BasicAfMallocSizeAllocated, MemAlignTestCase) {
+            for (auto &ptr : ptrs) {
+                malloc.free(ptr);
+            }
+        });
+    }
 
+    for (auto &thread : threads) {
+        thread.join();
+    }
+
+    std::chrono::system_clock::time_point time_now = std::chrono::system_clock::now();
+    std::cout << (time_now - time_start).count() << std::endl;
 }
