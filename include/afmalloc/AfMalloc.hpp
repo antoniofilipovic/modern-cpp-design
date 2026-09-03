@@ -4,11 +4,13 @@
 #include <bit>
 #include <bitset>
 #include <format>
-#include <unordered_map>
 #include <vector>
 #include <functional>
 #include <mutex>
 #include <type_traits>
+#include <cassert>
+#include <memory>
+#include <unistd.h>
 
 #include "utility/PointerTracker.hpp"
 

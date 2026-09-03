@@ -1,5 +1,6 @@
+#include "AfMalloc.hpp"
+
 #include <cstdint>
-#include <unistd.h>
 #include <iostream>
 #include <cassert>
 #include <memory>
@@ -7,9 +8,7 @@
 #include <optional>
 #include <algorithm>
 
-#include "AfMalloc.hpp"
 
-#include <numeric>
 #include <sstream>
 #include <sys/mman.h>
 
