@@ -490,7 +490,7 @@ struct ListHeadRef {
 bool isInFastBinRange(std::size_t size);
 
 bool isInSmallBinRange(std::size_t size);
-
+bool fitsSmallBinRange(std::size_t size);
 bool hasLargeChunkFree();
 
 

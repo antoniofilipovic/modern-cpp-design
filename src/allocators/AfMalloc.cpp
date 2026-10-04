@@ -130,9 +130,25 @@ std::optional<std::pair<std::size_t, std::size_t>> findBinIndex(const std::size_
     }if (isInSmallBinRange(allocations_size)) {
         return std::make_pair(SMALLBINS_INDEX, (allocations_size - SMALL_BIN_RANGE_START) / BIN_SPACING_SIZE);
     }
+
     return std::nullopt;
 }
 
+std::optional<std::pair<std::size_t, std::size_t>> findSmallBinIndex(const std::size_t allocations_size) {
+    // 1. All our allocations are divisible with size of 16
+    // 2. Our bins are made so that spacing between those bins is 16 bytes
+    //
+    assert(allocations_size % ALIGNMENT == 0);
+
+    if (isInSmallBinRange(allocations_size)) {
+        return std::make_pair(SMALLBINS_INDEX, (allocations_size - SMALL_BIN_RANGE_START) / BIN_SPACING_SIZE);
+    }
+
+    if (isInFastBinRange(allocations_size)) {
+        return std::make_pair(SMALLBINS_INDEX, 0);
+    }
+    return std::nullopt;
+}
 
 void clearUpDataSpaceOfChunk(Chunk *chunk) {
     auto *data_start =  moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE); // move to the place where data starts
@@ -435,6 +451,7 @@ AfMalloc::~AfMalloc() {
     //munmap(af_main_arena_.begin_, af_main_arena_.allocated_size_);
 }
 
+/// TODO needed_size is basically chunk size - remove it
 void AfArena::moveChunkToCorrectBin(Chunk *current_chunk, std::size_t needed_size) {
     auto maybe_bin_index = findBinIndex(needed_size);
     // free_chunk_list -> 1 -> 2 - > 3
@@ -524,6 +541,9 @@ Chunk * AfArena::trySplitChunk(Chunk *current_chunk, std::size_t needed_size) {
    auto chunks = splitChunk(current_chunk, needed_size);
     auto [exact_match, rest] = chunks;
 
+    /// TODO rest needs to move to correct bin chunk
+    moveChunkToCorrectBin(rest, current_chunk->getSize());
+
     return exact_match;
 }
 void* AfArena::findChunkFromUnsortedFreeChunks(std::size_t needed_size) {
@@ -585,6 +605,11 @@ std::size_t getMaxSmallBinBitIndex() {
 
 bool isInFastBinRange(std::size_t size) {
     return size <= FAST_BIN_RANGE_END;
+}
+
+/// Returns true if there is at least one bucket in which size chunk can fit to
+bool fitsSmallBinRange(const std::size_t size) {
+   return size <= SMALL_BIN_RANGE_END;
 }
 
 bool isInSmallBinRange(std::size_t size) {
@@ -813,12 +838,14 @@ void AfArena::dumpMemory() {
 /**
  * Try to find chunk which is of same size, or one size larger.
  * Not sure if we should iterate more here, and then just split the chunk if found
+ * This method searches for chunk even if it is not a regular fit for small bin size, if it is for fast chunks
+ * However, if the chunk is too big, it splits the chunk into two smaller parts
  * @param size
  * @return
  */
 Chunk *AfArena::tryFindSmallBinChunk(std::size_t size) {
     std::vector<Chunk > &small_chunks = small_chunks_;
-    auto [small_bin_index, bit_index] = *findBinIndex(size);
+    auto [small_bin_index, bit_index] = *findSmallBinIndex(size);
     assert(small_bin_index == SMALLBINS_INDEX);
     auto index = bit_index;
 
@@ -833,6 +860,9 @@ Chunk *AfArena::tryFindSmallBinChunk(std::size_t size) {
             Chunk *match  = chunk_list->getPrev();
             unlinkChunk(match);
             assert(match != nullptr);
+            /// match is at least of size - size
+            match = trySplitChunk(match, size);
+
             Chunk* next_chunk = getChunkPointerAfter(match, match->getSize());
             // next chunk only knows that we are free
             next_chunk->unsetPrevFree();
@@ -979,13 +1009,15 @@ void *AfMalloc::malloc(const std::size_t size) {
             return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
         }
     }
-
-    if(isInSmallBinRange(malloc_needed_size)) {
+    /// TODO this is for exact fit, but if we have split_chunks enabled we can go for bigger chunk, and then split it
+    /// Change so we can find any fit
+    if(fitsSmallBinRange(malloc_needed_size)) {
         if(auto *chunk = af_arena.tryFindSmallBinChunk(malloc_needed_size)) {
             return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
         }
     }
 
+    /// TODO this can use range index to see what fits and what does not fit - 8 ranges or something like that - configurable
     if(!isPointingToSelf(af_arena.unsorted_large_chunks_)) {
         if(auto *chunk = tryFindLargeChunk(&af_arena.unsorted_large_chunks_, malloc_needed_size)) {
             return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);

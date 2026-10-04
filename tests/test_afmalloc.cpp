@@ -1024,8 +1024,9 @@ TEST_F(BasicAfMallocSizeAllocated, TestSplitSmallChunk) {
     // we expect malloc to return 4000 bytes - WRONG
     // What malloc should do is split chunk and give us back mallocNeededSize(40)
     AfMalloc af_malloc{};
+    getGlobalConfig().split_chunks = true;
     // 500 -> mallocNeededSize is 512
-    void *ptr_big = af_malloc.malloc(500);
+    void *ptr_big = af_malloc.malloc(SMALL_BIN_RANGE_START);
     Chunk *chunk_ptr_big = getChunkPointerBefore(ptr_big, HEAD_OF_CHUNK_SIZE);
     // TODO allocate one more to remove chunk coalescing with top chunk
 
@@ -1044,7 +1045,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestSplitSmallChunk) {
     ASSERT_TRUE(bin_bit);
     auto [bin, bit] = *bin_bit;
     ASSERT_EQ(bin, SMALLBINS_INDEX);
-    ASSERT_EQ(bit, 21);
+    ASSERT_EQ(bit, 1);
 
     const Chunk &small_bin_chunk_start = arena->getSmallBinChunks()[bit];
     ASSERT_TRUE(!isPointingToSelf(small_bin_chunk_start));
@@ -1056,7 +1057,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestSplitSmallChunk) {
 
     Chunk *chunk2 = getChunkPointerBefore(new_ptr, HEAD_OF_CHUNK_SIZE);
     ASSERT_TRUE(chunk2 == chunk_ptr_big);
-    ASSERT_TRUE(chunk2->getSize() > SMALL_BIN_RANGE_START);
+    ASSERT_TRUE(chunk2->getSize() < FAST_BIN_RANGE_END);
 }
 
 
