@@ -125,10 +125,10 @@ std::optional<std::pair<std::size_t, std::size_t>> findBinIndex(const std::size_
     //
     assert(allocations_size % ALIGNMENT == 0);
 
-    if(allocations_size < FAST_BIN_RANGE_END) {
-        return std::make_pair(FASTBINS_INDEX, allocations_size / BIN_SPACING_SIZE);
-    }if(allocations_size < SMALL_BIN_RANGE_END) {
-        return std::make_pair(SMALLBINS_INDEX, (allocations_size - FAST_BIN_RANGE_END) / BIN_SPACING_SIZE);
+    if (isInFastBinRange(allocations_size)) {
+        return std::make_pair(FASTBINS_INDEX, (allocations_size - FAST_BIN_RANGE_START) / BIN_SPACING_SIZE);
+    }if (isInSmallBinRange(allocations_size)) {
+        return std::make_pair(SMALLBINS_INDEX, (allocations_size - SMALL_BIN_RANGE_START) / BIN_SPACING_SIZE);
     }
     return std::nullopt;
 }
@@ -254,7 +254,9 @@ void AfArena::extendTopChunk(){
 void unlinkChunk(Chunk* chunk) {
     // The only precondition here is that
     // next and prev chunk are not pointing to itself
-
+    if (chunk->getPrev() == nullptr && chunk->getNext() == nullptr) {
+        return;
+    }
     auto *nextChunk = chunk->getNext();
     assert(nextChunk != chunk);
     auto *prevChunk = chunk->getPrev();
@@ -304,9 +306,16 @@ void AfMalloc::init() {
 void AfMalloc::free(void *p) {
     // What guarantees we have here
     // How do we want our merging of top chunk to work?
-
+    if (p == nullptr) {
+        return;
+    }
     // LifetimeCheck: chunk is created
     Chunk *free_chunk = getChunkPointerBefore(p, HEAD_OF_CHUNK_SIZE);
+
+    // TODO fix poor man's out of range fix
+    if(free_chunk->getSize() == getChunkPointerAfter(p, free_chunk->getSize())->getPrevSize()) {
+        throw std::runtime_error("Wrong chunk deleted");
+    }
 
     AfHeap *heap = getHeapAddress(p);
     AfArena *arena = heap->arena_ptr_;
@@ -325,6 +334,7 @@ void AfMalloc::free(void *p) {
     auto const isFreedChunkCoalescable = isChunkCoalescable(*free_chunk);
 
     if (!isFreedChunkCoalescable) {
+        //TODO
         // link it and go back
     }
 
@@ -444,6 +454,78 @@ void AfArena::moveChunkToCorrectBin(Chunk *current_chunk, std::size_t needed_siz
 
 }
 
+/// This function splits the current_chunk if possible on new chunk with needed_size
+/// and rest_chunk with rest of size
+/// The function modifies the data of next_chunk so it has size of rest_chunk and flags for rest_chunk
+///
+/// The flags for current_chunk which next_chunk held now are held by rest_chunk
+///
+/// [prev_chunk][current_chunk (flags_prev_chunk) next and prev                            ][next_chunk flags_current_chunk]
+/// after
+/// [prev_chunk][current_chunk flags_prev_chunk, next and prev][rest_chunk flags_current_chunk next=prev=null][next_chunk flags_rest_chunk ...]
+/// After this function the current chunk still holds the links to next and prev, however that chunk is now most likely in wrong bucket
+/// hence it needs repairing afterwards
+/// That is for the caller of function to fix
+std::pair<Chunk *, Chunk*> AfArena::splitChunk(Chunk *current_chunk, std::size_t needed_size) {
+    if (current_chunk->getSize() - needed_size >= CHUNK_SIZE) {
+
+      // needed size 32
+      // chunk_size 48
+      // -> decision no split because smallest possible chunk is 32
+      // needed_size is multiplier of 16 bytes whereas  the smallest chunk we can leave is 32
+      // needed_size = 32
+      //  chunk_size = 64
+      // decision -> split 32 32
+        // case C
+        // needed_size = 48
+        // chunk_size = 80
+        // 48, 32
+        // next_chunk believes our chunk is X
+        // now the rest_chunk will be next to next_chunk so we need to update next_chunk prev size
+        // and next_chunk needs to have isPrevFree true
+        /// Few things need to happen:
+        /// 1. we need to create one more chunk - rest_chunk
+        /// 2. rest_chunk needs to have a proper size and flag
+        /// 3. current_chunk needs to have a proper size and flag
+        /// 4. next chunk needs to have a size of rest_chunk now
+
+
+        const auto start_size = current_chunk->getSize();
+        Chunk * next_chunk = getChunkPointerAfter(current_chunk, current_chunk->getSize());
+        const bool is_current_chunk_free = next_chunk->isPrevFree();
+        // 1.
+        void *rest = moveToTheNextPlaceInMem(current_chunk, needed_size);
+        // these flags are related now to isPrevFree
+        Flag flags = Flag{current_chunk->getFlags()};
+
+        // next_chunk from current chunk needs to say that we are free chunk
+        // 3.
+        current_chunk->setSizeWithFlag(needed_size, flags);
+
+        // 2.
+        auto *rest_chunk = std::start_lifetime_as<Chunk>(rest);
+        rest_chunk->setPrevSize(needed_size);
+
+        const auto rest_chunk_size = start_size - needed_size;
+        /// next_chunk held flags like is_prev free
+        rest_chunk->setSizeWithFlag(rest_chunk_size, getFlag(is_current_chunk_free));
+
+        // 4.
+        next_chunk->setPrevSize(rest_chunk->getSize());
+        next_chunk->setPrevFree();
+
+        return {current_chunk, rest_chunk};
+    }
+   return {current_chunk, nullptr};
+}
+
+// tries to split and returns exact match if possible
+Chunk * AfArena::trySplitChunk(Chunk *current_chunk, std::size_t needed_size) {
+   auto chunks = splitChunk(current_chunk, needed_size);
+    auto [exact_match, rest] = chunks;
+
+    return exact_match;
+}
 void* AfArena::findChunkFromUnsortedFreeChunks(std::size_t needed_size) {
     // Next to the free chunk, unless it is in the fast bin range, there will always be an allocated chunk,
     // since otherwise we would coalesce them
@@ -458,12 +540,22 @@ void* AfArena::findChunkFromUnsortedFreeChunks(std::size_t needed_size) {
     while(current_chunk != start) {
         // We are looking for the first chunk that we can find.
         // If we encounter a chunk which is not of needed size, we will move it to the appropriate bin
-        if(current_chunk->getSize()  >= needed_size) {
-            match = current_chunk;
-            break;
-        }
+        // In any case we need to unlink chunk. Once it is unlinked we can start processing requests.
+
         Chunk *next_chunk = current_chunk->getNext();
         unlinkChunk(current_chunk);
+        if(current_chunk->getSize()  >= needed_size) {
+            /// if we can split it due to afmalloc settings
+            /// do the split [match      ] -> [exact_match, rest]
+            /// put the flags
+            /// return exact match
+            if (getGlobalConfig().split_chunks) {
+                match = trySplitChunk(current_chunk, needed_size);
+            }else {
+                match = current_chunk;
+            }
+            break;
+        }
         moveChunkToCorrectBin(current_chunk, current_chunk->getSize());
         current_chunk = next_chunk;
     }
@@ -472,7 +564,6 @@ void* AfArena::findChunkFromUnsortedFreeChunks(std::size_t needed_size) {
         return nullptr;
     }
 
-    unlinkChunk(match);
 
     // TODO this is opportunity to split the chunk on the multiple chunks, since we could otherwise get really
     // big chunk
@@ -481,16 +572,15 @@ void* AfArena::findChunkFromUnsortedFreeChunks(std::size_t needed_size) {
     next_chunk->unsetPrevFree();
     // this part of memory will be used by our chunk also, hence we need to zero the memory
     next_chunk->setPrevSize(0x0000);
-
     return match;
 }
 
 std::size_t getMaxFastBinBitIndex() {
-    return FAST_BIN_RANGE_END / BIN_SPACING_SIZE;
+    return NUM_FAST_CHUNKS - 1;
 }
 
 std::size_t getMaxSmallBinBitIndex() {
-    return (SMALL_BIN_RANGE_END - FAST_BIN_RANGE_END) / BIN_SPACING_SIZE;
+    return NUM_SMALL_CHUNKS - 1;
 }
 
 bool isInFastBinRange(std::size_t size) {
@@ -498,7 +588,7 @@ bool isInFastBinRange(std::size_t size) {
 }
 
 bool isInSmallBinRange(std::size_t size) {
-    return size >= FAST_BIN_RANGE_END && size <= SMALL_BIN_RANGE_END;
+    return size > FAST_BIN_RANGE_END && size <= SMALL_BIN_RANGE_END;
 }
 
 bool hasLargeChunkFree(Chunk *large_chunk) {
@@ -526,15 +616,17 @@ bool AfArena::isBinBitIndexSet(std::size_t bin, std::size_t bit) {
  * @return
  */
 Chunk *AfArena::tryFindFastBinChunk(const std::size_t size) {
-    auto [fast_bin_index, bit_index] = *findBinIndex(size);
+    const auto [fast_bin_index, bit_index] = *findBinIndex(size);
     assert(fast_bin_index == FASTBINS_INDEX);
     auto index = bit_index;
 
     // Traverse only up to 2 blocks away from our chunk
-    while(index < getMaxFastBinBitIndex() && (index - bit_index <= 2)) {
+    while(index <= getMaxFastBinBitIndex() && (index - bit_index <= 2)) {
         Chunk &chunk_list = fast_chunks_[index];
-        if(isPointingToSelf(chunk_list)) {
-            unsetBitIndex(fast_bin_index, bit_index);
+        assert(isPointingToSelf(chunk_list) || isBinBitIndexSet(fast_bin_index, index));
+        // Value might not be set on index so it is worth checking like this
+        if(isPointingToSelf(chunk_list)) { // TODO swap with index check and then
+            unsetBitIndex(fast_bin_index, index);
         }else {
             // Not sure how malloc does this, but probably good idea to restrict this to one above
             // if there is no exact match, otherwise we are wasting a lot of memory space
@@ -546,6 +638,9 @@ Chunk *AfArena::tryFindFastBinChunk(const std::size_t size) {
             next_chunk->unsetPrevFree();
             // this part of memory will be used by our chunk also, hence we need to zero the memory
             next_chunk->setPrevSize(0x0000);
+            if (isPointingToSelf(chunk_list)) {
+                unsetBitIndex(fast_bin_index, index);
+            }
             return match;
         }
         index++;
@@ -728,10 +823,11 @@ Chunk *AfArena::tryFindSmallBinChunk(std::size_t size) {
     auto index = bit_index;
 
     Chunk *chunk_list{nullptr};
-    while(true) {
+    while(index <= getMaxSmallBinBitIndex() && index - bit_index <= 2) {
         chunk_list = &small_chunks[index];
-        if(isPointingToSelf(*chunk_list) || !isBinBitIndexSet(small_bin_index, index)) {
-            unsetBitIndex(small_bin_index, index);
+        if(isPointingToSelf(*chunk_list) ) {
+            if (isBinBitIndexSet(small_bin_index, index))
+                unsetBitIndex(small_bin_index, index);
             index++;
         }else {
             Chunk *match  = chunk_list->getPrev();
@@ -745,12 +841,8 @@ Chunk *AfArena::tryFindSmallBinChunk(std::size_t size) {
             return match;
         }
 
-        // Not sure how malloc does this, but probably good idea to restrict this to one above
-        // if there is no exact match, otherwise we are wasting a lot of memory space
-        if(index > getMaxSmallBinBitIndex() || index - bit_index >= 2 ) {
-            return nullptr;
-        }
     }
+    return nullptr;
 }
 
 AfHeap* AfArena::setupHeap(void *p) {
@@ -909,15 +1001,25 @@ void *AfMalloc::malloc(const std::size_t size) {
             assert(false); // unsupported case
         }
 
-
+        AfHeap *af_heap = nullptr;
         if(af_arena.top_ != nullptr) {
-            // The leftover chunk should be reused
-            assert(false);
-        }
+            throw std::runtime_error("Did not expect this case");
+            // [     (top_)]
+            // Top has prev_free, prev_size and etc things set
+            // We should clear now the top_ chunk and use 16 bytes or whatever is left to put chunk_size = 0  so we do
+            // not explore this route
+            Chunk * top_chunk  = chunkAt(af_arena.top_);
+            Flag flag = Flag{top_chunk->getFlags()};
+            top_chunk->setSizeWithFlag(0, flag);
 
-        AfHeap *af_heap{nullptr};
-        if(void *heap_memory = allocateNewHeap(); heap_memory != nullptr) {
-            af_heap = af_arena.setupHeap(heap_memory);
+            af_arena.top_ = nullptr;
+            if(void *heap_memory = allocateNewHeap(); heap_memory != nullptr) {
+                af_heap = af_arena.setupHeap(heap_memory);
+            }
+        }else {
+            if(void *heap_memory = allocateNewHeap(); heap_memory != nullptr) {
+                af_heap = af_arena.setupHeap(heap_memory);
+            }
         }
 
 
@@ -977,6 +1079,7 @@ void *AfMalloc::memAlign(std::size_t alignment, std::size_t size) {
     // or the chunk next one will be misaligned
 
 
+
     alignment = std::max(alignment, ALIGNMENT);
 
     // mallocNeededSize would not work correctly if we pass our needed alignment
@@ -996,6 +1099,8 @@ void *AfMalloc::memAlign(std::size_t alignment, std::size_t size) {
     const auto allocatedSizeNeeded = getMallocNeededSize(size);
 
     auto &arena = getArena();
+    std::lock_guard<std::mutex> guard{arena.arena_lock_};
+
     Chunk *top_chunk = std::launder(reinterpret_cast<Chunk*>(arena.getTop()));
     std::size_t top_chunk_size = top_chunk->getSize();
 

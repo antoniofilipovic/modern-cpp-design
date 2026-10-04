@@ -463,7 +463,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestChunkIsMovedToTheCorrectBin) {
 
         auto [bin, bit] = *findBinIndex(getMallocNeededSize(10));
         ASSERT_EQ(bin, FASTBINS_INDEX);
-        ASSERT_EQ(bit, 2);
+        ASSERT_EQ(bit, 0);
         ASSERT_EQ(getMallocNeededSize(10), 32);
         ASSERT_FALSE(isPointingToSelf(fast_bin_chunks[bit]));
         ASSERT_EQ(fast_bin_chunks[bit].getNext(), chunk_0);
@@ -486,7 +486,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestChunkIsMovedToTheCorrectBin) {
     {
         auto [bin, bit] = *findBinIndex(getMallocNeededSize(100));
         ASSERT_EQ(bin, FASTBINS_INDEX);
-        ASSERT_EQ(bit, 7);
+        ASSERT_EQ(bit, 5);
         ASSERT_EQ(getMallocNeededSize(100), 112);
         ASSERT_FALSE(isPointingToSelf(fast_bin_chunks[bit]));
         ASSERT_EQ(fast_bin_chunks[bit].getNext(), chunk_2);
@@ -497,7 +497,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestChunkIsMovedToTheCorrectBin) {
     {
         auto [bin, bit] = *findBinIndex(getMallocNeededSize(105));
         ASSERT_EQ(bin, FASTBINS_INDEX);
-        ASSERT_EQ(bit, 8);
+        ASSERT_EQ(bit, 6);
         ASSERT_EQ(getMallocNeededSize(105), 128);
         ASSERT_FALSE(isPointingToSelf(fast_bin_chunks[bit]));
         ASSERT_EQ(fast_bin_chunks[bit].getNext(), chunk_4);
@@ -510,7 +510,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestChunkIsMovedToTheCorrectBin) {
     {
         auto [bin, bit] = *findBinIndex(getMallocNeededSize(180));
         ASSERT_EQ(bin, SMALLBINS_INDEX);
-        ASSERT_EQ(bit, 2);
+        ASSERT_EQ(bit, 1);
         ASSERT_EQ(getMallocNeededSize(180), 192);
         ASSERT_FALSE(isPointingToSelf(small_bin_chunks[bit]));
         ASSERT_EQ(small_bin_chunks[bit].getNext(), chunk_3);
@@ -520,7 +520,7 @@ TEST_F(BasicAfMallocSizeAllocated, TestChunkIsMovedToTheCorrectBin) {
     {
         auto [bin, bit] = *findBinIndex(getMallocNeededSize(200));
         ASSERT_EQ(bin, SMALLBINS_INDEX);
-        ASSERT_EQ(bit, 3);
+        ASSERT_EQ(bit, 2);
         ASSERT_EQ(getMallocNeededSize(200), 208);
         ASSERT_FALSE(isPointingToSelf(small_bin_chunks[bit]));
         ASSERT_EQ(small_bin_chunks[bit].getNext(), chunk_5);
@@ -748,11 +748,10 @@ TEST_F(BasicAfMallocSizeAllocated, TestFastBinSmallBinChunkReusing) {
 
     // This malloc will trigger moving chunks from unsorted to specific lists
     void *ptr_4 = af_malloc.malloc(FAST_BIN_RANGE_END*2);
-    af_malloc.dumpMemory();
 
     auto [small_bin, small_bit] = *findBinIndex(getMallocNeededSize(FAST_BIN_RANGE_END+45));
     ASSERT_EQ(small_bin, SMALLBINS_INDEX);
-    ASSERT_EQ(small_bit, 4); // mallocedSize(45) - floor((45+15+8)/16)*16 = 64 -> 64/16 = 4
+    ASSERT_EQ(small_bit, 3); // 172 + 45 = 217 / 16 = 14
     ASSERT_TRUE(arena->isBinBitIndexSet(small_bin, small_bit));
 
     // this will trigger reusing small chunk
@@ -979,3 +978,138 @@ TEST_F(MultiThreadedDevelopment, MultipleThreadsSpeed) {
     std::chrono::system_clock::time_point time_now = std::chrono::system_clock::now();
     std::cout << (time_now - time_start).count() << std::endl;
 }
+
+
+
+TEST_F(BasicAfMallocSizeAllocated, TestFastChunks) {
+
+    AfMalloc af_malloc{};
+
+    void *first_malloc = af_malloc.malloc(FAST_BIN_RANGE_START);
+}
+
+
+TEST_F(BasicAfMallocSizeAllocated, TestSplitUnsortedChunks) {
+    // Test allocates one big chunk, let's say 4000 bytes
+    // Then it frees that chunk
+    // Then we request from malloc 40 bytes
+    // 1. Since we first traverse unsorted chunks, and we have one chunk of 4000 bytes
+    // we expect malloc to return 4000 bytes - WRONG
+    // What malloc should do is split chunk and give us back mallocNeededSize(40)
+    AfMalloc af_malloc{};
+    getGlobalConfig().split_chunks = true;
+    void *ptr_big = af_malloc.malloc(4000);
+    Chunk *chunk_ptr_big = getChunkPointerBefore(ptr_big, HEAD_OF_CHUNK_SIZE);
+    // just to disable malloc from extending top
+    void *fake_ptr = af_malloc.malloc(4000);
+
+    af_malloc.free(ptr_big);
+    AfArena * arena = verifyAndGetArena(ptr_big);
+    Chunk *unsorted_chunks = arena->getUnsortedChunks();
+    ASSERT_FALSE(isPointingToSelf(*unsorted_chunks));
+    ASSERT_TRUE(unsorted_chunks->getNext() == chunk_ptr_big);
+
+    auto *ptr = af_malloc.malloc(40);
+    Chunk *chunk2 = getChunkPointerBefore(ptr, HEAD_OF_CHUNK_SIZE);
+    ASSERT_TRUE(chunk2 == chunk_ptr_big);
+    ASSERT_TRUE(chunk2->getSize() < 4000);
+}
+
+
+TEST_F(BasicAfMallocSizeAllocated, TestSplitSmallChunk) {
+    // Test allocates one big chunk, let's say 4000 bytes
+    // Then it frees that chunk
+    // Then we request from malloc 40 bytes
+    // 1. Since we first traverse unsorted chunks, and we have one chunk of 4000 bytes
+    // we expect malloc to return 4000 bytes - WRONG
+    // What malloc should do is split chunk and give us back mallocNeededSize(40)
+    AfMalloc af_malloc{};
+    // 500 -> mallocNeededSize is 512
+    void *ptr_big = af_malloc.malloc(500);
+    Chunk *chunk_ptr_big = getChunkPointerBefore(ptr_big, HEAD_OF_CHUNK_SIZE);
+    // TODO allocate one more to remove chunk coalescing with top chunk
+
+    void *fake_ptr = af_malloc.malloc(4000);
+    af_malloc.free(ptr_big);
+
+    AfArena * arena = verifyAndGetArena(ptr_big);
+    Chunk *unsorted_chunks = arena->getUnsortedChunks();
+    ASSERT_FALSE(isPointingToSelf(*unsorted_chunks));
+    ASSERT_TRUE(unsorted_chunks->getNext() == chunk_ptr_big);
+
+    // Now we need to allocate bigger chunk again so small bin chunk we freed cannot be used in coalescing
+    auto *ptr = af_malloc.malloc(4000);
+
+    auto bin_bit = findBinIndex(chunk_ptr_big->getSize());
+    ASSERT_TRUE(bin_bit);
+    auto [bin, bit] = *bin_bit;
+    ASSERT_EQ(bin, SMALLBINS_INDEX);
+    ASSERT_EQ(bit, 21);
+
+    const Chunk &small_bin_chunk_start = arena->getSmallBinChunks()[bit];
+    ASSERT_TRUE(!isPointingToSelf(small_bin_chunk_start));
+
+   ASSERT_TRUE(chunk_ptr_big == small_bin_chunk_start.getNext());
+
+
+    void * new_ptr = af_malloc.malloc(FAST_BIN_RANGE_START);
+
+    Chunk *chunk2 = getChunkPointerBefore(new_ptr, HEAD_OF_CHUNK_SIZE);
+    ASSERT_TRUE(chunk2 == chunk_ptr_big);
+    ASSERT_TRUE(chunk2->getSize() > SMALL_BIN_RANGE_START);
+}
+
+
+TEST_F(BasicAfMallocSizeAllocated, TestSplitLargeChunk) {
+    /// Test similar to one above, we are just testing if we can split
+    /// the large chunk
+    AfMalloc af_malloc{};
+    getGlobalConfig().split_chunks = true;
+    /// Replace the large chunk
+    void *ptr_big = af_malloc.malloc(1000);
+    Chunk *chunk_ptr_big = getChunkPointerBefore(ptr_big, HEAD_OF_CHUNK_SIZE);
+
+    // Allocate chunk so we do not coalasce with top chunk
+    void *fake_ptr = af_malloc.malloc(300);
+    /// Free now the big ptr to put it in the unsorted chunk
+    af_malloc.free(ptr_big);
+
+    AfArena * arena = verifyAndGetArena(ptr_big);
+    Chunk *unsorted_chunks = arena->getUnsortedChunks();
+    ASSERT_FALSE(isPointingToSelf(*unsorted_chunks));
+    ASSERT_TRUE(unsorted_chunks->getNext() == chunk_ptr_big);
+
+    // Now we need to request more than any chunk we freed before so we can get new chunk
+    auto *ptr = af_malloc.malloc(3000);
+
+    auto bin_bit = findBinIndex(chunk_ptr_big->getSize());
+    ASSERT_TRUE(!bin_bit.has_value());
+
+    const Chunk &unsorted_large_chunk = arena->getUnsortedLargeChunks();
+    ASSERT_TRUE(!isPointingToSelf(unsorted_large_chunk));
+
+    ASSERT_TRUE(chunk_ptr_big == unsorted_large_chunk.getNext());
+
+
+    void * new_ptr = af_malloc.malloc(FAST_BIN_RANGE_START);
+
+    Chunk *chunk2 = getChunkPointerBefore(new_ptr, HEAD_OF_CHUNK_SIZE);
+    ASSERT_TRUE(chunk2 == chunk_ptr_big);
+    ASSERT_TRUE(chunk2->getSize() < 50);
+}
+
+TEST_F(BasicAfMallocSizeAllocated, TestWrongFreeThrows) {
+    // Test allocates one big chunk, let's say 4000 bytes
+    // Then it frees that chunk
+    // Then we request from malloc 40 bytes
+    // 1. Since we first traverse unsorted chunks, and we have one chunk of 4000 bytes
+    // we expect malloc to return 4000 bytes - WRONG
+    // What malloc should do is split chunk and give us back mallocNeededSize(40)
+    AfMalloc af_malloc{};
+    void *ptr_big = af_malloc.malloc(SMALL_BIN_RANGE_START);
+    Chunk *chunk_ptr_big = getChunkPointerAfter(ptr_big, HEAD_OF_CHUNK_SIZE);
+
+
+    ASSERT_ANY_THROW(af_malloc.free(chunk_ptr_big));
+}
+

@@ -28,6 +28,7 @@ enum TrackingIds : uint8_t {
 struct GlobalConfig {
   bool isTrackingGlobal{false};
   bool disableRoundRobin{false};
+  bool split_chunks{false};
 };
 
 
@@ -75,23 +76,30 @@ constexpr std::size_t ALIGNMENT = 2 * SIZE_OF_SIZE;
 constexpr std::size_t ALIGNMENT_MASK = ALIGNMENT - 1;
 
 
+constexpr std::size_t BIN_SPACING_SIZE = 16;
 static std::size_t HEAD_OF_CHUNK_SIZE = 16;
 
-
-constexpr std::size_t FAST_BIN_RANGE_START = 16;
+constexpr std::size_t FAST_BIN_RANGE_START = 32;
 constexpr std::size_t FAST_BIN_RANGE_END = 160;
-constexpr std::size_t NUM_FAST_CHUNKS = FAST_BIN_RANGE_END / FAST_BIN_RANGE_START;
+constexpr std::size_t NUM_FAST_CHUNKS = ((FAST_BIN_RANGE_END - FAST_BIN_RANGE_START) / BIN_SPACING_SIZE) + 1;
 
+constexpr std::size_t SMALL_BIN_RANGE_START = FAST_BIN_RANGE_END + BIN_SPACING_SIZE; //176
 constexpr std::size_t SMALL_BIN_RANGE_END = 512;
+constexpr std::size_t NUM_SMALL_CHUNKS = ((SMALL_BIN_RANGE_END - SMALL_BIN_RANGE_START) / BIN_SPACING_SIZE) + 1;
 
-constexpr std::size_t BIN_SPACING_SIZE = 16;
+
 constexpr std::size_t BITMAP_SIZE = 32;
 constexpr std::size_t FASTBINS_INDEX = 0;
 constexpr std::size_t SMALLBINS_INDEX = 1;
 
-constexpr std::size_t NUM_SMALL_CHUNKS = (SMALL_BIN_RANGE_END - FAST_BIN_RANGE_END) / BIN_SPACING_SIZE;
 
-static_assert((SMALL_BIN_RANGE_END - FAST_BIN_RANGE_END) / BIN_SPACING_SIZE <= BITMAP_SIZE);
+static_assert(NUM_FAST_CHUNKS  <= BITMAP_SIZE);
+static_assert(NUM_SMALL_CHUNKS <= BITMAP_SIZE);
+// every size in a range must land exactly on a bin boundary
+static_assert((FAST_BIN_RANGE_END  - FAST_BIN_RANGE_START ) % BIN_SPACING_SIZE == 0);
+static_assert((SMALL_BIN_RANGE_END - SMALL_BIN_RANGE_START) % BIN_SPACING_SIZE == 0);
+// the ranges must be contiguous: no size may fall between the two
+static_assert(SMALL_BIN_RANGE_START == FAST_BIN_RANGE_END + BIN_SPACING_SIZE);
 
 constexpr std::size_t NUM_ARENAS_FACTOR = 1;
 constexpr std::size_t NUM_CORES = 2; // find the function which can provide correct num cores
@@ -111,6 +119,8 @@ class OnScopeExit {
 
 };
 
+Flag getFlag(bool is_prev_free);
+std::optional<std::pair<std::size_t, std::size_t>> findBinIndex(std::size_t allocations_size) ;
 /**
  *
  */
@@ -136,6 +146,8 @@ class Chunk{
     [[nodiscard]] bool isPrevFree() const {
       return size_ & PREV_FREE;
     }
+
+
 
     void setPrevFree() {
       size_ |= PREV_FREE;
@@ -372,6 +384,10 @@ public:
 
   bool isBinBitIndexSet(std::size_t bin, std::size_t bit);
 
+  std::pair<Chunk *, Chunk*> splitChunk(Chunk *current_chunk, std::size_t needed_size);
+
+  // tries to split and returns exact match if possible
+  Chunk *trySplitChunk(Chunk *current_chunk, std::size_t needed_size);
 
   /**
   * Allocate with the user requested alignment, of at least size bytes
@@ -396,6 +412,11 @@ public:
     return small_chunks_;
   }
 
+
+  Chunk &getUnsortedLargeChunks() {
+    return unsorted_large_chunks_;
+  }
+
   void dumpMemory();
 
 
@@ -418,7 +439,10 @@ public:
   Chunk unsorted_chunks_{0, 0, nullptr, nullptr};
 
   /**
-   * Index list to help find if there are some free chunks there or not
+   * Index list to help find if there are some free chunks there or not.
+   * The idea of these indices is they are best effort. They are set
+   * when chunks are added, but they might not be removed always on clearing these chunks.
+   * If we encounter bit set for bin index but bin empty, we clear the bit then.
    */
   std::vector<std::bitset<32>> bin_indexes_{};
 
