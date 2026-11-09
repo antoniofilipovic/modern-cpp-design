@@ -1114,3 +1114,30 @@ TEST_F(BasicAfMallocSizeAllocated, TestWrongFreeThrows) {
     ASSERT_ANY_THROW(af_malloc.free(chunk_ptr_big));
 }
 
+
+TEST_F(BasicAfMallocSizeAllocated, AllocatePastOneHeap) {
+    /// make one big allocation
+    /// make one allocation which does not fit the space so we need new heap
+    /// check the top chunk is not the same any more -> new top chunk
+    /// check that request is satisifed from the top chunk
+    AfMalloc af_malloc{};
+    void *ptr_big = af_malloc.malloc(MAX_HEAP_SIZE - 100);
+
+    Chunk *chunk_ptr_big = getChunkPointerBefore(ptr_big, HEAD_OF_CHUNK_SIZE);
+    auto *arena_1= verifyAndGetArena(chunk_ptr_big);
+    auto *heap_1 = getHeapAddress(chunk_ptr_big);
+    auto *top_1 = arena_1->getTop();
+
+    void *one_more_chunk = af_malloc.malloc(100);
+    Chunk *chunk_ptr_small = getChunkPointerBefore(one_more_chunk, HEAD_OF_CHUNK_SIZE);
+
+    auto *arena_2 = verifyAndGetArena(chunk_ptr_small);
+    auto *heap_2 = getHeapAddress(chunk_ptr_small);
+    auto *top_2 = arena_2->getTop();
+    //TODO what happens when you call arena_1 getTop after top has moved? aha, since arena is the same it should be
+    // fine
+
+    ASSERT_EQ(arena_1, arena_2);
+    ASSERT_NE(heap_1,heap_2);
+    ASSERT_NE(top_1, top_2);
+}

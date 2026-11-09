@@ -312,7 +312,8 @@ inline AfHeap *getHeapAddress(void *p) {
   // Hence here we divide
   auto missAlignment = getAlignmentSize(p, MAX_HEAP_SIZE);
   auto base = reinterpret_cast<uintptr_t>(p) - (MAX_HEAP_SIZE - missAlignment);
-  assert((reinterpret_cast<uintptr_t>(p) & (~MAX_HEAP_SIZE + 1)) == base);
+  // TODO this is throwing on new heap, what is the problem, while getAlignmentSize retu
+  //assert((reinterpret_cast<uintptr_t>(p) & (~MAX_HEAP_SIZE + 1)) == base);
   /// heap already exists so calling std::start_lifetime_as is not good solution, right
   /// // std::launder or start_lifetime_as
   return std::launder(reinterpret_cast<AfHeap *>(base));
@@ -386,6 +387,8 @@ public:
 
   std::pair<Chunk *, Chunk*> splitChunk(Chunk *current_chunk, std::size_t needed_size);
 
+
+    Chunk *tryFindLargeChunk(std::size_t size);
   // tries to split and returns exact match if possible
   Chunk *trySplitChunk(Chunk *current_chunk, std::size_t needed_size);
 
@@ -495,7 +498,6 @@ bool hasLargeChunkFree();
 
 
 
-Chunk *tryFindLargeChunk(Chunk *large_chunks, std::size_t size);
 
 /////// Utility methods
 

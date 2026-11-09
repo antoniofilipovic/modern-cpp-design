@@ -392,7 +392,8 @@ void AfMalloc::free(void *p) {
     bool isNextChunkFree{false};
     // next chunk is not top, hence we need to check by moving to the chunk after next chunk if the next chunk is free
     /// [free_chunk][next_chunk][(prev_size)(size | is_prev_free) chunk after next_chunk]
-    if (!arena->isTopChunk(next_chunk)) {
+    /// TODO I think we can just check first here if chunk is coalescable, if not skip
+    if (!arena->isTopChunk(next_chunk)) { // TODO check if borderChunk (size 0)
         // LifetimeCheck: should be fine. Again chunk's lifetime has started on malloc
         isNextChunkFree = getChunkPointerAfter(next_chunk, next_chunk->getSize())->isPrevFree();
     }
@@ -834,7 +835,7 @@ void AfArena::dumpMemory() {
 
 
 }
-
+// TODO use index checking, currently we go evaluate even if we are sure there is no field there
 /**
  * Try to find chunk which is of same size, or one size larger.
  * Not sure if we should iterate more here, and then just split the chunk if found
@@ -844,11 +845,13 @@ void AfArena::dumpMemory() {
  * @return
  */
 Chunk *AfArena::tryFindSmallBinChunk(std::size_t size) {
+    // This method tries to find small bin index that would fit the best, so if the chunk is in the fastBinRange it
+    // actually returns small bin index with bit 0 in the vector
+    // Better approach here is to have separate functions for these two // TODO we need to use index checking which is fast if something is linked or used
     std::vector<Chunk > &small_chunks = small_chunks_;
     auto [small_bin_index, bit_index] = *findSmallBinIndex(size);
     assert(small_bin_index == SMALLBINS_INDEX);
     auto index = bit_index;
-
     Chunk *chunk_list{nullptr};
     while(index <= getMaxSmallBinBitIndex() && index - bit_index <= 2) {
         chunk_list = &small_chunks[index];
@@ -891,14 +894,17 @@ AfHeap* AfArena::setupHeap(void *p) {
     return heap;
 }
 
-Chunk *tryFindLargeChunk(Chunk *large_chunks, std::size_t size) {
+Chunk *AfArena::tryFindLargeChunk( std::size_t size) {
+    const auto alignment_size  = getAlignmentSize(size, ALIGNMENT);
+    assert(alignment_size == 0) ;
+    auto *large_chunks = &unsorted_large_chunks_;
     Chunk *current = large_chunks->getPrev();
     while(large_chunks != current) {
         if (current->getSize() >= size) {
             unlinkChunk(current);
             // TODO prepare chunk to be returned to user
-            // Also split the chunk maybe
-            Chunk* next_chunk = getChunkPointerAfter(current, current->getSize());
+            auto *maybe_better_match = trySplitChunk(current, size);
+            Chunk* next_chunk = getChunkPointerAfter(maybe_better_match, current->getSize());
             // next chunk only knows that we are free
             next_chunk->unsetPrevFree();
             // this part of memory will be used by our chunk also, hence we need to zero the memory
@@ -1019,7 +1025,7 @@ void *AfMalloc::malloc(const std::size_t size) {
 
     /// TODO this can use range index to see what fits and what does not fit - 8 ranges or something like that - configurable
     if(!isPointingToSelf(af_arena.unsorted_large_chunks_)) {
-        if(auto *chunk = tryFindLargeChunk(&af_arena.unsorted_large_chunks_, malloc_needed_size)) {
+        if(auto *chunk = af_arena.tryFindLargeChunk(malloc_needed_size)) {
             return moveToTheNextPlaceInMem(chunk, HEAD_OF_CHUNK_SIZE);
         }
     }
@@ -1028,25 +1034,32 @@ void *AfMalloc::malloc(const std::size_t size) {
     // If there is less then HEAD_OF_CHUNK_SIZE left, we need to
 
     // There needs to be enough size for our allocation and for the top chunk left
+
+    // one idea
+    // TODO it can happen that malloc_needed_size = MAX_HEAP_SIZE
+
+    // then there is no space for heap object and we are writing to space we do not own malloc(MAX_HEAP_SIZE - 32)
+    // That case needs to be munmapped
     if(af_arena.getTopChunkSize()  < malloc_needed_size + TOP_CHUNK_NEEDED_SIZE) {
+
         if(malloc_needed_size > MAX_HEAP_SIZE) {
             assert(false); // unsupported case
         }
 
         AfHeap *af_heap = nullptr;
         if(af_arena.top_ != nullptr) {
-            throw std::runtime_error("Did not expect this case");
-            // [     (top_)]
-            // Top has prev_free, prev_size and etc things set
-            // We should clear now the top_ chunk and use 16 bytes or whatever is left to put chunk_size = 0  so we do
-            // not explore this route
             Chunk * top_chunk  = chunkAt(af_arena.top_);
-            Flag flag = Flag{top_chunk->getFlags()};
-            top_chunk->setSizeWithFlag(0, flag);
+            top_chunk->setSizeWithFlag(0, Flag{EMPTY_FLAG});
+            // TODO split chunk needs to be done, we need to split it on the X and 32, it is different from what we have now
+            //top_chunk->setSizeWithFlag(0, flag);
 
-            af_arena.top_ = nullptr;
-            if(void *heap_memory = allocateNewHeap(); heap_memory != nullptr) {
+            //af_arena.top_ = nullptr;
+            if(void *heap_memory = allocateNewHeap()) {
+                // TODO we need only to verify that linnking of the heaps works we need to memorize the old heap, as this one is only overwritting old one
                 af_heap = af_arena.setupHeap(heap_memory);
+                af_arena.top_ = af_heap;
+            }else {
+                throw std::logic_error("Can't allocate new heap");
             }
         }else {
             if(void *heap_memory = allocateNewHeap(); heap_memory != nullptr) {
@@ -1058,6 +1071,8 @@ void *AfMalloc::malloc(const std::size_t size) {
         auto* top =  std::start_lifetime_as<Chunk>(af_arena.top_);
         assert(af_heap != nullptr);
         top->setSizeWithFlag(af_heap->heap_size_ - getPtrDiffSize(af_arena.top_, af_arena.last_heap_), Flag{EMPTY_FLAG}) ;
+    }else {
+        // allocate new heap, move the old top chunk to the free chunk list and chunk it up later
     }
 
 
