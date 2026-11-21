@@ -1141,3 +1141,89 @@ TEST_F(BasicAfMallocSizeAllocated, AllocatePastOneHeap) {
     ASSERT_NE(heap_1,heap_2);
     ASSERT_NE(top_1, top_2);
 }
+
+
+TEST_F(BasicAfMallocSizeAllocated, AllocateOnePastHeapChunkSplitAndBorder) {
+   // Now we test that this is a border chunk, the old top chunk
+    AfMalloc af_malloc{};
+    auto val =  BORDER_FLAG;
+    ASSERT_EQ(BORDER_FLAG, 1);
+
+
+    void *ptr_big = af_malloc.malloc(MAX_HEAP_SIZE - 116);
+
+    Chunk *chunk_ptr_big = getChunkPointerBefore(ptr_big, HEAD_OF_CHUNK_SIZE);
+    auto *arena_1= verifyAndGetArena(chunk_ptr_big);
+    auto *heap_1 = getHeapAddress(chunk_ptr_big);
+    auto *top_1 = arena_1->getTop();
+    {
+        auto *top_1_chunk = chunkAt(top_1);
+        ASSERT_EQ(FAST_BIN_RANGE_START, 32);
+        ASSERT_EQ(top_1_chunk->getSize(), 64);
+    }
+    void *one_more_chunk = af_malloc.malloc(100);
+    Chunk *chunk_ptr_small = getChunkPointerBefore(one_more_chunk, HEAD_OF_CHUNK_SIZE);
+
+    auto *arena_2 = verifyAndGetArena(chunk_ptr_small);
+    auto *heap_2 = getHeapAddress(chunk_ptr_small);
+    auto *top_2 = arena_2->getTop();
+    //TODO what happens when you call arena_1 getTop after top has moved? aha, since arena is the same it should be
+    // fine
+    auto* fast_from_top_1_chunk = chunkAt(top_1);
+    // At this point we should have split top_1 chunk into rest which is fast chunk and border_chunk
+    ASSERT_EQ(arena_1, arena_2);
+    ASSERT_NE(heap_1,heap_2);
+    ASSERT_NE(fast_from_top_1_chunk, top_2);
+    Chunk *border_chunk = getChunkPointerAfter(fast_from_top_1_chunk, CHUNK_SIZE);
+    ASSERT_EQ(fast_from_top_1_chunk->getFlags(), EMPTY_FLAG);
+    ASSERT_EQ(border_chunk->getFlags(), BORDER_FLAG | PREV_FREE);
+
+}
+
+TEST_F(BasicAfMallocSizeAllocated, AllocateOnePastHeapMoveRestToFree) {
+    // We want to test that old top chunk ends up at free list of chunks
+    // Once we do then new allocation we will try to satisfy request from that chunk
+    AfMalloc af_malloc{};
+
+
+    void *ptr_big = af_malloc.malloc(MAX_HEAP_SIZE - 200);
+
+    Chunk *chunk_ptr_big = getChunkPointerBefore(ptr_big, HEAD_OF_CHUNK_SIZE);
+    auto *arena_1= verifyAndGetArena(chunk_ptr_big);
+    auto *heap_1 = getHeapAddress(chunk_ptr_big);
+    auto *top_1 = arena_1->getTop();
+    {
+        auto *top_1_chunk = chunkAt(top_1);
+        ASSERT_EQ(top_1_chunk->getSize(), 160);
+    }
+    void *one_more_chunk = af_malloc.malloc(200);
+    Chunk *chunk_ptr_small = getChunkPointerBefore(one_more_chunk, HEAD_OF_CHUNK_SIZE);
+
+    auto *arena_2 = verifyAndGetArena(chunk_ptr_small);
+    auto *heap_2 = getHeapAddress(chunk_ptr_small);
+    auto *top_2 = arena_2->getTop();
+
+    auto* old_top_chunk = chunkAt(top_1);
+    // At this point we should have split top_1 chunk into rest which is fast chunk and border_chunk
+    ASSERT_EQ(arena_1, arena_2);
+    ASSERT_NE(heap_1,heap_2);
+    ASSERT_NE(old_top_chunk, top_2);
+
+
+    ASSERT_EQ(old_top_chunk->getSize(), 128);
+    ASSERT_EQ(old_top_chunk->getFlags(), EMPTY_FLAG);
+    auto *border_chunk = getChunkPointerAfter(old_top_chunk, old_top_chunk->getSize());
+    ASSERT_EQ(border_chunk->getSize(), 32);
+    ASSERT_EQ(border_chunk->getFlags(), BORDER_FLAG | PREV_FREE);
+    auto &fast_bin_chunks = arena_1->getFastBinChunks();
+    auto maybe_bin_bit = findBinIndex(old_top_chunk->getSize());
+    auto [bin, bit] = *maybe_bin_bit;
+    ASSERT_EQ(bin, FASTBINS_INDEX);
+    ASSERT_EQ(bit, (128-32)/16);
+    auto &head_chunk = fast_bin_chunks[bit];
+    ASSERT_EQ(head_chunk.getNext(), old_top_chunk);
+
+    // TODO
+    // Now we need to allocate new chunk and hope to reuse that free chunk
+    // Then we free it and check that it is not coala
+}

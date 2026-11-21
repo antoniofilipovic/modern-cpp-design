@@ -41,6 +41,10 @@ Chunk *chunkAt(void *ptr) {
 Flag getFlag(const bool isPrevFree) {
     return isPrevFree? Flag{PREV_FREE} : Flag{EMPTY_FLAG};
 }
+
+Flag getFlags(const bool isPrevFree, const bool isBorderChunk) {
+    return Flag{getFlag(isPrevFree).flag_ | (isBorderChunk?BORDER_FLAG:0)};
+}
 void* moveToTheNextPlaceInMemAlignment(void *ptr, std::size_t size, std::size_t alignment) {
     auto *new_place =  reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ptr) + size);
     auto additional_alignment_movement = getAlignmentSize(new_place, alignment);
@@ -485,9 +489,16 @@ void AfArena::moveChunkToCorrectBin(Chunk *current_chunk, std::size_t needed_siz
 /// hence it needs repairing afterwards
 /// That is for the caller of function to fix
 std::pair<Chunk *, Chunk*> AfArena::splitChunk(Chunk *current_chunk, std::size_t needed_size) {
-    if (current_chunk->getSize() - needed_size >= CHUNK_SIZE) {
 
-      // needed size 32
+        const auto start_size = current_chunk->getSize();
+    if (start_size -  needed_size >= CHUNK_SIZE) {
+
+    auto is_border_chunk = current_chunk->isBorderChunk();
+        if (is_border_chunk) {
+            assert(needed_size == CHUNK_SIZE);
+            needed_size = start_size - CHUNK_SIZE;
+        }
+        // needed size 32
       // chunk_size 48
       // -> decision no split because smallest possible chunk is 32
       // needed_size is multiplier of 16 bytes whereas  the smallest chunk we can leave is 32
@@ -508,29 +519,42 @@ std::pair<Chunk *, Chunk*> AfArena::splitChunk(Chunk *current_chunk, std::size_t
         /// 4. next chunk needs to have a size of rest_chunk now
 
 
-        const auto start_size = current_chunk->getSize();
-        Chunk * next_chunk = getChunkPointerAfter(current_chunk, current_chunk->getSize());
-        const bool is_current_chunk_free = next_chunk->isPrevFree();
+        // This flag should be called: Will rest chunk be free
+        // In case of border chunk it will be, in case of other chunks we need to ask
+        bool is_current_chunk_free{false};
+        Chunk* next_chunk{nullptr};
+        if  (!is_border_chunk) {
+             next_chunk = getChunkPointerAfter(current_chunk, current_chunk->getSize());
+            is_current_chunk_free= next_chunk->isPrevFree();
+        }else {
+            is_current_chunk_free = true;// border chunk is free but not usable
+        }
         // 1.
         void *rest = moveToTheNextPlaceInMem(current_chunk, needed_size);
         // these flags are related now to isPrevFree
-        Flag flags = Flag{current_chunk->getFlags()};
+        Flag new_flags_for_curr_chunk= Flag{current_chunk->getFlags()};
 
+        if (is_border_chunk) {
+            new_flags_for_curr_chunk = Flag{new_flags_for_curr_chunk.flag_ & ~BORDER_FLAG};
+        }
         // next_chunk from current chunk needs to say that we are free chunk
         // 3.
-        current_chunk->setSizeWithFlag(needed_size, flags);
-
+        current_chunk->setSizeWithFlag(needed_size, new_flags_for_curr_chunk);
         // 2.
         auto *rest_chunk = std::start_lifetime_as<Chunk>(rest);
         rest_chunk->setPrevSize(needed_size);
 
         const auto rest_chunk_size = start_size - needed_size;
         /// next_chunk held flags like is_prev free
-        rest_chunk->setSizeWithFlag(rest_chunk_size, getFlag(is_current_chunk_free));
+        /// if curretn chunk was border, now this one becomes border
+        Flag rest_chunk_flags = getFlags(is_current_chunk_free, is_border_chunk);
+        rest_chunk->setSizeWithFlag(rest_chunk_size, rest_chunk_flags);
 
         // 4.
-        next_chunk->setPrevSize(rest_chunk->getSize());
-        next_chunk->setPrevFree();
+        if (!is_border_chunk) {
+            next_chunk->setPrevSize(rest_chunk->getSize());
+            next_chunk->setPrevFree();
+        }
 
         return {current_chunk, rest_chunk};
     }
@@ -546,6 +570,28 @@ Chunk * AfArena::trySplitChunk(Chunk *current_chunk, std::size_t needed_size) {
     moveChunkToCorrectBin(rest, current_chunk->getSize());
 
     return exact_match;
+}
+
+Chunk* AfArena::trySplitBorderChunk(Chunk *current_chunk) {
+    assert(current_chunk->isBorderChunk());
+    // Rest chunk will always exist
+    auto [rest, border] = splitChunk(current_chunk, CHUNK_SIZE);
+    assert(rest != nullptr);
+    if (border == nullptr) {
+        border = rest;
+        rest = nullptr;
+    }
+    if (rest) {
+        assert(border->isPrevFree() == true);
+        assert(border->getPrevSize() == rest->getSize());
+
+        moveChunkToCorrectBin(rest, rest->getSize());
+    }else {
+        border->unsetPrevFree();//TODO this seems buggy? check this route
+    }
+    border->setSizeWithFlag(border->getSize(), Flag(border->getFlags()));
+    return border;
+
 }
 void* AfArena::findChunkFromUnsortedFreeChunks(std::size_t needed_size) {
     // Next to the free chunk, unless it is in the fast bin range, there will always be an allocated chunk,
@@ -1049,15 +1095,13 @@ void *AfMalloc::malloc(const std::size_t size) {
         AfHeap *af_heap = nullptr;
         if(af_arena.top_ != nullptr) {
             Chunk * top_chunk  = chunkAt(af_arena.top_);
-            top_chunk->setSizeWithFlag(0, Flag{EMPTY_FLAG});
+            top_chunk->setSizeWithFlag(top_chunk->getSize(), Flag{BORDER_FLAG});
             // TODO split chunk needs to be done, we need to split it on the X and 32, it is different from what we have now
-            //top_chunk->setSizeWithFlag(0, flag);
 
-            //af_arena.top_ = nullptr;
+            auto *border_chunk = af_arena.trySplitBorderChunk(top_chunk);
             if(void *heap_memory = allocateNewHeap()) {
                 // TODO we need only to verify that linnking of the heaps works we need to memorize the old heap, as this one is only overwritting old one
                 af_heap = af_arena.setupHeap(heap_memory);
-                af_arena.top_ = af_heap;
             }else {
                 throw std::logic_error("Can't allocate new heap");
             }
@@ -1070,7 +1114,7 @@ void *AfMalloc::malloc(const std::size_t size) {
 
         auto* top =  std::start_lifetime_as<Chunk>(af_arena.top_);
         assert(af_heap != nullptr);
-        top->setSizeWithFlag(af_heap->heap_size_ - getPtrDiffSize(af_arena.top_, af_arena.last_heap_), Flag{EMPTY_FLAG}) ;
+        top->setSizeWithFlag(af_heap->heap_size_ - getPtrDiffSize(af_arena.top_, af_arena.last_heap_), Flag{BORDER_FLAG}) ;
     }else {
         // allocate new heap, move the old top chunk to the free chunk list and chunk it up later
     }

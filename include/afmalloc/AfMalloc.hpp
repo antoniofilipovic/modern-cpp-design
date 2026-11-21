@@ -37,18 +37,18 @@ inline GlobalConfig& getGlobalConfig() {
   return globalConfig;
 }
 
+
 // How we mark that previous is inuse
 // 63 may come out of random, but it is sizeof(std::size_t) * CHAR_NUM_BITS - 1
-static std::size_t PREV_FREE = 1ul << 63;
-static std::size_t EMPTY_FLAG = 0ul;
+constexpr std::size_t PREV_FREE = 1ul << 62;
+constexpr std::size_t EMPTY_FLAG = 0ul;
+constexpr std::size_t BORDER_FLAG = 1ul ;
+constexpr std::size_t ALL_FLAGS = PREV_FREE | EMPTY_FLAG | BORDER_FLAG;
 
 struct Flag {
   explicit Flag(const std::size_t flag) : flag_(flag) {}
-  const std::size_t flag_{};
+   std::size_t flag_{};
 };
-
-
-
 
 
 // original malloc implementation has fastBins from 32 to 160 bytes
@@ -130,7 +130,7 @@ class Chunk{
     Chunk(const std::size_t prev_size, const std::size_t size, Chunk *prev, Chunk *next): previous_size_(prev_size), size_(size), prev_(prev), next_(next) {}
 
     [[nodiscard]] std::size_t getSize() const {
-      return size_ & ~PREV_FREE;
+      return size_ & ~ALL_FLAGS;
     }
 
 
@@ -156,7 +156,9 @@ class Chunk{
     void unsetPrevFree() {
       size_ &= ~PREV_FREE;
     }
-
+    void unsetBorderFlag() {
+      size_ &= ~BORDER_FLAG;
+    }
     [[nodiscard]] std::size_t getPrevSize() const {
       return previous_size_;
     }
@@ -188,9 +190,12 @@ class Chunk{
     void setNext(Chunk *next) {
       next_ = next;
     }
+    [[nodiscard]] bool isBorderChunk() const {
+      return (BORDER_FLAG & size_)>0;
+    }
 
     [[nodiscard]] std::size_t getFlags() const {
-      return isPrevFree()? PREV_FREE : 0;
+      return size_ & ALL_FLAGS;
     }
 
     bool operator==(const Chunk &other) const {
@@ -392,6 +397,7 @@ public:
   // tries to split and returns exact match if possible
   Chunk *trySplitChunk(Chunk *current_chunk, std::size_t needed_size);
 
+  Chunk *trySplitBorderChunk(Chunk *current_chunk);
   /**
   * Allocate with the user requested alignment, of at least size bytes
   * @param alignment
